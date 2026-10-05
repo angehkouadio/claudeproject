@@ -2142,6 +2142,96 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   };
 })();
 
+/* ---------- équilibrage S1 : affectation des paiements par compte et virements ---------- */
+(function () {
+  "use strict";
+  const M = 1e6;
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  CHR.EQ_ROWS = [
+    { r: "NIVELLEMENT VIA PICI", niv: true },
+    { r: "AUTRES NIVELLEMENTS", niv: true },
+    { r: "FOURNISSEURS-PROJETS", fon: ["FOURNISSEURS - PROJET"], proj: true },
+    { r: "FOURNISSEURS-FGX", fon: ["FOURNISSEURS - FGX"] },
+    { r: "IMPÔTS", fon: ["IMPÔTS ET TAXES"], legal: true },
+    { r: "CHARGES SOCIALES", fon: ["CHARGES SOCIALES"], legal: true },
+    { r: "SALAIRES", fon: ["SALAIRES"], legal: true },
+    { r: "ÉCHÉANCES", fon: ["REMBOURSEMENT DE PRÊTS"], ded: ["Remboursement de prêt"] },
+    { r: "AUTRES (ENCAISSEMENTS, DIVERS)", fon: ["AUTRES DÉCAISSEMENTS", "ENCAISSEMENTS"], ded: ["Encaissements de loyers"] },
+    { r: "ENREGISTREMENTS", fon: ["ENREGISTREMENTS"] },
+  ];
+  const short = (a) => {
+    const n = a.name;
+    if (/debt service/i.test(n)) return "STB Debt Service";
+    if (/fonds projet/i.test(n)) return "BNI fonds projet";
+    if (/bni/i.test(n) && /courant/i.test(n)) return "BNI courant";
+    if (/^BACI-/i.test(n)) return n.replace(/^BACI-/i, "BACI ").replace(/CompteCourant/i, "courant");
+    const b = String(a.bank || n).toUpperCase();
+    const map = [["SOCIETE GENERALE", "SG"], ["STANBIC", "STB"], ["ECOBANK", "ECO"], ["BNI", "BNI"], ["BANK OF AFRICA", "BOA"], ["BANQUE ATLANTIQUE", "BACI"], ["SIB", "SIB"]];
+    for (const [k, v] of map) if (b.indexOf(k) === 0 || n.toUpperCase().indexOf(k) === 0) return v;
+    return n;
+  };
+  CHR.equilibrage = function (C, opt) {
+    opt = opt || {};
+    const wk = C.WK[0];
+    const ORDER = ["TERASSON", "PICI", "FIRST", "RIVIERA", "SCO AO", "IMMONEUF", "FINAFRICA", "INFI SOFT", "ODALYS CI", "AB CENTER", "RHD CI"];
+    const rank = (e) => { const i = ORDER.indexOf(e); return i < 0 ? 50 : i; };
+    let cols = C.acc.map((a, i) => ({ i, a, ent: a.ent, name: a.name, short: short(a), bal: a.amt / M,
+      kind: a.cpi ? "PROJ" : a.debt ? "DETTE" : /ARBITRER$/.test(a.key) ? "ARB" : a.block === "SOC" ? (/projet sco/i.test(a.dest) ? "SCOPRJ" : "FONC") : "RESERVE" }))
+      .filter((c) => c.kind !== "RESERVE" && (Math.abs(c.bal) > 0.0005 || c.kind === "ARB"));
+    const entsWithFlows = {};
+    C.fon.forEach((x) => { if (x.ret === "O" && x.wk === wk) entsWithFlows[x.ent] = 1; });
+    Object.keys(entsWithFlows).forEach((e) => { if (!cols.some((c) => c.ent === e && c.kind === "FONC")) cols.push({ i: -1, a: null, ent: e, name: e + " (paiement par PICI)", short: "payé par PICI", bal: 0, kind: "FONC", virtual: true }); });
+    cols.sort((x, y) => rank(x.ent) - rank(y.ent) || y.bal - x.bal);
+    cols.forEach((c, j) => (c.j = j));
+    const payer = (ent, kind) => { const cs = cols.filter((c) => c.ent === ent && c.kind === kind); return cs.length ? cs.reduce((a, b) => (b.bal > a.bal ? b : a)) : null; };
+    // affectation des flux S1
+    const grid = {};   // row|j -> M
+    const add = (row, c, v) => { if (!c) return; const k = row + "|" + c.j; grid[k] = (grid[k] || 0) + v; };
+    const rowOfFon = (nat) => CHR.EQ_ROWS.find((r) => r.fon && r.fon.indexOf(nat) >= 0);
+    C.fon.filter((x) => x.ret === "O" && x.wk === wk).forEach((x) => {
+      const R = rowOfFon(x.nat) || CHR.EQ_ROWS[8];
+      const c = x.nat === "FOURNISSEURS - PROJET" ? (payer(x.ent, "SCOPRJ") || payer(x.ent, "FONC")) : payer(x.ent, "FONC");
+      add(R.r, c, x.fcfa / M);
+    });
+    C.ded.filter((x) => x.ret === "O" && x.wk === wk).forEach((x) => {
+      const isDebt = /DETTE$/.test(x.key);
+      const c = cols.find((k) => k.a && k.a.key === x.key) || null;
+      const R = isDebt ? (x.nat === "Encaissements de loyers" ? "AUTRES (ENCAISSEMENTS, DIVERS)" : "ÉCHÉANCES") : "FOURNISSEURS-PROJETS";
+      add(R, c, x.fcfa / M);
+    });
+    const solde = (c) => c.bal + sum(Object.keys(grid).filter((k) => +k.split("|")[1] === c.j).map((k) => grid[k]));
+    const transfers = [];
+    const move = (type, s, d, t, why) => { add(type, s, -t); add(type, d, t); transfers.push({ type, src: s, dst: d, amt: t, why }); };
+    // 1. autres nivellements (même entité)
+    cols.filter((c) => c.kind === "FONC" && !c.virtual).forEach((c) => {
+      if (solde(c) >= -0.0005) return;
+      cols.filter((s) => s.ent === c.ent && s !== c && (s.kind === "FONC" || (s.kind === "ARB" && opt.useArb !== false)) && !s.virtual).sort((a, b) => solde(b) - solde(a)).forEach((s) => {
+        const av = solde(s), gap = -solde(c);
+        if (av > 0.0005 && gap > 0.0005) move("AUTRES NIVELLEMENTS", s, c, Math.min(av, gap), s.kind === "ARB" ? "Compte à arbitrer – sous réserve de validation" : "Regroupement sur le compte payeur");
+      });
+    });
+    // 2. nivellement via PICI (excédents PICI puis FIRST ; charges légales d'abord, plus petits déficits d'abord)
+    const srcEnts = opt.sources || ["PICI", "FIRST"];
+    const minKeep = (opt.minKeep || 0) / M;
+    const srcs = [];
+    srcEnts.forEach((e) => cols.filter((c) => c.ent === e && c.kind === "FONC" && !c.virtual).sort((a, b) => solde(b) - solde(a)).forEach((c) => srcs.push(c)));
+    const legalNeed = (c) => -sum(CHR.EQ_ROWS.filter((r) => r.legal).map((r) => grid[r.r + "|" + c.j] || 0));
+    const targets = cols.filter((c) => c.kind === "FONC" && srcEnts.indexOf(c.ent) < 0 && solde(c) < -0.0005).sort((a, b) => solde(b) - solde(a));
+    ["légal", "fournisseurs"].forEach((phase) => targets.forEach((c) => {
+      let gap = phase === "légal" ? Math.max(0, Math.min(-solde(c), legalNeed(c) - Math.max(0, c.bal))) : -solde(c);
+      srcs.forEach((s) => {
+        const av = solde(s) - minKeep;
+        if (gap <= 0.0005 || av <= 0.0005) return;
+        const t = Math.min(av, gap); gap -= t;
+        move("NIVELLEMENT VIA PICI", s, c, t, phase === "légal" ? "Impôts, cotisations et salaires" : "Fournisseurs");
+      });
+    }));
+    transfers.forEach((t) => (t.amt = Math.round(t.amt * M)));
+    const reste = sum(cols.map((c) => Math.max(0, -solde(c))));
+    return { wk, cols, grid, transfers, reste, soldes: cols.map(solde) };
+  };
+})();
+
 /* =====================================================================
    CHR.compare : rapprochement reporting de Christophe ↔ présentation RCI (Laureen)
    L = modèle RCI.compute ; C = modèle CHR.compute ; rd = détail du RECAP
@@ -2282,6 +2372,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const WK = C.WK, W = C.W;
     const fon = C.fon, ded = C.ded;
     const RH = wb.addWorksheet("Reporting Hebdo", { views: [{ state: "frozen", xSplit: 4, ySplit: 10, showGridLines: false, zoomScale: 90 }] });
+    const EQ = wb.addWorksheet("Équilibrage S1", { views: [{ state: "frozen", xSplit: 1, ySplit: 6, showGridLines: false, zoomScale: 90 }] });
     const DF = wb.addWorksheet("Détail fonctionnement", { views: [{ state: "frozen", ySplit: 4, xSplit: 4, showGridLines: false }] });
     const DP = wb.addWorksheet("Détail projets & dettes", { views: [{ state: "frozen", ySplit: 4, xSplit: 7, showGridLines: false }] });
     const posName = "Position CI " + U.ddmm(C.sit).replace("/", "-");
@@ -2547,6 +2638,9 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     Object.keys(widths).forEach((k) => (ws.getColumn(k).width = widths[k]));
     ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
 
+    // ================= Équilibrage S1 =================
+    buildEquilibrage(EQ, C, { set, money: null, rngF, rngP, posName, posRow, B4, fill, F, BLEU, VERT, NUM });
+
     // ================= Contrôles =================
     const c = CT;
     let k = 1;
@@ -2599,6 +2693,12 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Signes", "Décaissements en négatif, encaissements en positif. Solde théorique = solde précédent + prévisions de la semaine."],
       ["Devise", "Taux fixe 655,957 FCFA / € (cellule E3 de « Reporting Hebdo »)."],
       ["Retenu", "O = intégré au reporting ; N = conservé pour traçabilité. Passer une ligne à O l'intègre automatiquement."],
+      ["", ""],
+      ["Équilibrage S1", ""],
+      ["Compte payeur", "Sociétés : compte « Dédié besoin de fonctionnement » au plus gros solde ; fournisseurs projets : compte « Dédié paiement CPI » (SCO AO : BACI-Projet) ; échéances FIRST : compte Debt Service ; RHD CI (sans compte) : paiement par PICI pour son compte."],
+      ["Autres nivellements", "Regroupement des comptes d'une même entité sur son compte payeur ; BNI-RIVIERA courant mobilisé pour RIVIERA, sous réserve d'arbitrage."],
+      ["Nivellement via PICI", "Excédents PICI puis FIRST vers les sociétés en déficit : impôts, cotisations et salaires d'abord, fournisseurs ensuite, en commençant par les plus petits déficits."],
+      ["Liens", "Paiements : SUMIFS sur les feuilles de détail (semaine S1, Retenu = O) ; soldes : position CI ; nivellements : tableau des virements, modifiable."],
     ];
     let mr = 1;
     set(ME, "A1", "Méthode, règles de semaine et sources", { font: { bold: true, size: 14 } }); mr = 3;
@@ -2610,6 +2710,117 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     ME.getColumn(1).width = 30; ME.getColumn(2).width = 140;
     return wb.xlsx.writeBuffer();
   };
+
+  function buildEquilibrage(ws, C, h) {
+    const { set, rngF, rngP, posName, posRow, B4, fill, F, BLEU, VERT, NUM } = h;
+    const EQd = CHR.equilibrage(C);
+    const cols = EQd.cols, wk = EQd.wk;
+    cols.forEach((c) => (c.label = ({ FIRST: "SCI FIRST", RIVIERA: "RIVIERA PARK", "INFI SOFT": "INFI" }[c.ent] || c.ent) + " – " + c.short));
+    const NUM0 = '#,##0;-#,##0;"-"';
+    const L = (j) => ws.getColumn(2 + j).letter;
+    const W = C.W[0];
+    set(ws, "A1", "Équilibrage et affectation des paiements – " + wk + " (" + CHR.util.ddmm(W.d0) + " au " + CHR.util.dmy(W.d1) + ")", { font: { bold: true, size: 13 } });
+    set(ws, "A2", "Paiements : liens vers les feuilles de détail (" + wk + ", Retenu = O). Soldes : liens vers la position CI. Nivellements : tableau des virements ci-dessous (modifiable).", { font: { italic: true, color: { argb: "FF6B7280" } } });
+    const r0 = 4, obsC = cols.length + 2;
+    set(ws, "A" + r0, "Opérations à effectuer", { font: { bold: true } });
+    ws.mergeCells(r0, 1, r0 + 2, 1);
+    ws.mergeCells(r0, 2, r0, 1 + cols.length);
+    set(ws, ws.getCell(r0, 2).address, "Paiement via", { font: { bold: true } });
+    const groups = [];
+    cols.forEach((c) => { const g = groups[groups.length - 1]; if (g && g.ent === c.ent) g.to = c.j; else groups.push({ ent: c.ent, from: c.j, to: c.j }); });
+    groups.forEach((g) => {
+      if (g.to > g.from) ws.mergeCells(r0 + 1, 2 + g.from, r0 + 1, 2 + g.to);
+      set(ws, ws.getCell(r0 + 1, 2 + g.from).address, { FIRST: "SCI FIRST", RIVIERA: "RIVIERA PARK", "INFI SOFT": "INFI" }[g.ent] || g.ent, { font: { bold: true } });
+    });
+    cols.forEach((c) => set(ws, ws.getCell(r0 + 2, 2 + c.j).address, c.short, { font: { bold: true } }));
+    set(ws, ws.getCell(r0, obsC).address, "Observations", { font: { bold: true } });
+    for (let r = r0; r <= r0 + 2; r++) for (let k = 1; k <= obsC; k++) { const x = ws.getCell(r, k); x.border = B4; x.alignment = { horizontal: "center", vertical: "middle", wrapText: true }; if (r === r0 + 2 && k > 1 && k < obsC) x.fill = fill(BLEU); }
+    const first = r0 + 3;
+    const ROWS = CHR.EQ_ROWS;
+    const tStart = first + ROWS.length + 7;          // tableau des virements
+    const tEnd = tStart + 1 + Math.max(EQd.transfers.length + 15, 30);
+    const TR = (col) => "$" + col + "$" + (tStart + 1) + ":$" + col + "$" + tEnd;
+    const OBS = { "NIVELLEMENT VIA PICI": "Excédents PICI puis FIRST vers les sociétés en déficit : impôts, cotisations et salaires d'abord, fournisseurs ensuite",
+      "AUTRES NIVELLEMENTS": "Virements entre comptes d'une même entité (BNI-RIVIERA courant : sous réserve d'arbitrage)",
+      "FOURNISSEURS-PROJETS": "Cash plans : comptes « Dédié paiement CPI » ; SCO AO : BACI-Projet", "ÉCHÉANCES": "Service de la dette FIRST : compte Debt Service",
+      "ENREGISTREMENTS": "Hors besoin (droits d'enregistrement, Retenu = N)" };
+    const payerOf = (ent, kind) => { const cs = cols.filter((c) => c.ent === ent && c.kind === kind); return cs.length ? cs.reduce((a, b) => (b.bal > a.bal ? b : a)) : null; };
+    ROWS.forEach((R, k) => {
+      const r = first + k;
+      set(ws, "A" + r, R.r, { bd: B4 });
+      cols.forEach((c) => {
+        let f = null;
+        const nameRef = '"' + c.label.replace(/"/g, '""') + '"';
+        if (R.niv) f = "SUMIFS(" + TR("H") + "," + TR("A") + ',"' + R.r + '",' + TR("E") + "," + nameRef + ")-SUMIFS(" + TR("H") + "," + TR("A") + ',"' + R.r + '",' + TR("C") + "," + nameRef + ")";
+        else {
+          const parts = [];
+          if (R.fon && (c.kind === "FONC" || c.kind === "SCOPRJ") && (c.virtual || payerOf(c.ent, c.kind) === c)) {
+            const hasPrj = !!payerOf(c.ent, "SCOPRJ");
+            R.fon.forEach((nat) => {
+              const isPrj = nat === "FOURNISSEURS - PROJET";
+              if (c.kind === "SCOPRJ" && !isPrj) return;
+              if (c.kind === "FONC" && isPrj && hasPrj) return;
+              parts.push("SUMIFS(" + rngF("E") + "," + rngF("A") + ',"' + wk + '",' + rngF("B") + ',"' + c.ent + '",' + rngF("C") + ',"' + nat + '",' + rngF("G") + ',"O")');
+            });
+          }
+          if (c.a && c.kind === "PROJ" && R.proj) parts.push("SUMIFS(" + rngP("I") + "," + rngP("A") + ',"' + wk + '",' + rngP("B") + ',"' + c.a.key + '",' + rngP("J") + ',"O")');
+          if (c.a && c.kind === "DETTE" && R.ded) R.ded.forEach((nat) => parts.push("SUMIFS(" + rngP("I") + "," + rngP("A") + ',"' + wk + '",' + rngP("B") + ',"' + c.a.key + '",' + rngP("D") + ',"' + nat + '",' + rngP("J") + ',"O")'));
+          if (parts.length) f = parts.join("+");
+        }
+        const cell = ws.getCell(r, 2 + c.j);
+        cell.value = f ? { formula: f } : null;
+        cell.numFmt = NUM0; cell.border = B4;
+        cell.font = F({ color: { argb: R.legal ? "FFC00000" : "FF000000" } });
+      });
+      set(ws, ws.getCell(r, obsC).address, OBS[R.r] || "", { font: { size: 9, color: { argb: "FF6B7280" } }, bd: B4, al: { wrapText: true, vertical: "top" } });
+    });
+    const rt = first + ROWS.length;
+    const labs = ["Total", "Solde au " + CHR.util.dmy(C.sit), "Solde théorique fin " + wk + " (" + CHR.util.dmy(W.d1) + ")", "Reste à financer (spot) ou à reporter"];
+    labs.forEach((t, k) => {
+      const r = rt + k;
+      set(ws, "A" + r, t, { font: { bold: true }, bd: B4, al: { horizontal: "center" }, fill: k === 1 ? "FFD8E4BC" : undefined });
+      cols.forEach((c) => {
+        const Lc = L(c.j), cell = ws.getCell(r, 2 + c.j);
+        if (k === 0) cell.value = { formula: "SUM(" + Lc + first + ":" + Lc + (rt - 1) + ")" };
+        else if (k === 1) { cell.value = c.virtual ? 0 : { formula: "'" + posName + "'!F" + posRow[c.i] }; cell.fill = fill("FFD8E4BC"); }
+        else if (k === 2) cell.value = { formula: Lc + rt + "+" + Lc + (rt + 1) };
+        else cell.value = { formula: "IF(" + Lc + (rt + 2) + "<0,-" + Lc + (rt + 2) + ",0)" };
+        cell.numFmt = NUM0; cell.border = B4;
+        cell.font = F({ bold: true, color: { argb: k === 1 ? "FF008000" : "FF000000" } });
+      });
+      if (k === 3) set(ws, ws.getCell(r, obsC).address, { formula: 'SUM(B' + r + ':' + L(cols.length - 1) + r + ')' }, { font: { bold: true, color: { argb: "FFC00000" } }, fmt: NUM0, bd: B4 });
+    });
+    // mise en forme conditionnelle : soldes théoriques
+    ws.addConditionalFormatting({ ref: "B" + (rt + 2) + ":" + L(cols.length - 1) + (rt + 2), rules: [
+      { type: "cellIs", operator: "lessThan", formulae: ["-0.5"], style: { font: { color: { argb: "FFC00000" }, bold: true } } },
+      { type: "cellIs", operator: "greaterThanOrEqual", formulae: ["-0.5"], style: { font: { color: { argb: "FF00B050" }, bold: true } } }] });
+    // tableau des virements
+    set(ws, "A" + (tStart - 1), "Virements à passer (modifiables : les nivellements et les soldes ci-dessus se recalculent)", { font: { bold: true } });
+    const TC = [["A", "A", "Type de nivellement"], ["B", "B", "N°"], ["C", "D", "Compte source"], ["E", "F", "Compte bénéficiaire"], ["G", "G", ""], ["H", "H", "Montant FCFA"], ["I", "L", "Motif"]];
+    for (let r = tStart; r <= tEnd; r++) {
+      const t = r > tStart ? EQd.transfers[r - tStart - 1] : null;
+      const vals = r === tStart ? TC.map((x) => x[2]) : t ? [t.type, r - tStart, t.src.label, t.dst.label, "", t.amt, t.why] : ["", null, "", "", "", null, ""];
+      TC.forEach((x, k) => {
+        if (x[0] !== x[1]) ws.mergeCells(x[0] + r + ":" + x[1] + r);
+        const st = r === tStart ? { font: { bold: true }, fill: BLEU, bd: B4, al: { horizontal: "center", wrapText: true } } : { bd: B4 };
+        const cell = set(ws, x[0] + r, vals[k] === "" ? null : vals[k], st);
+        if (x[0] === "H") cell.numFmt = NUM0;
+        if (x[0] === "G") cell.border = {};
+      });
+    }
+    const accList = cols.map((c) => c.label);
+    const lr = tEnd + 3;
+    set(ws, "A" + (lr - 1), "Comptes (liste de saisie)", { font: { italic: true, color: { argb: "FF6B7280" } } });
+    accList.forEach((n, k) => set(ws, "A" + (lr + k), n, { font: { color: { argb: "FF6B7280" } } }));
+    ws.dataValidations.add("A" + (tStart + 1) + ":A" + tEnd, { type: "list", allowBlank: true, formulae: ['"NIVELLEMENT VIA PICI,AUTRES NIVELLEMENTS"'] });
+    for (let r = tStart + 1; r <= tEnd; r++) ["C", "E"].forEach((col) => ws.dataValidations.add(col + r, { type: "list", allowBlank: true, formulae: ["$A$" + lr + ":$A$" + (lr + accList.length - 1)] }));
+    set(ws, "E" + (tEnd + 1), "Total des virements", { font: { bold: true } });
+    set(ws, "H" + (tEnd + 1), { formula: "SUM(H" + (tStart + 1) + ":H" + tEnd + ")" }, { font: { bold: true }, fmt: NUM0 });
+    ws.getColumn(1).width = 36;
+    cols.forEach((c) => (ws.getColumn(2 + c.j).width = 14));
+    ws.getColumn(obsC).width = 60;
+    ws.pageSetup = { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+  }
 
   function buildCompareSheet(ws, CMP, set, head, B4) {
     const NUM1 = "#,##0.0;-#,##0.0;\"–\"";
