@@ -105,6 +105,7 @@
     <div class="file" id="f-bil"><div class="need">Projets</div><h3>Bilans financiers (cash plans)</h3><div class="st">En attente… (RIVIERA et Village Notre Père, feuille « Marchés et Dépenses HT »)</div></div>
     <div class="file" id="f-rents"><div class="need">Facultatif</div><h3>État des loyers FIRST</h3><div class="st">En attente… (sans ce fichier, aucun loyer)</div></div>
     <div class="file" id="f-chris"><div class="need">Facultatif – SCO AO</div><h3>Reporting de Christophe</h3><div class="st">En attente… (feuille « Reporting Hebdo » : seuls les flux SCO AO sont repris)</div></div>
+    <div class="file" id="f-edit"><div class="need">Facultatif – mise à jour</div><h3>Reporting modifié</h3><div class="st">En attente… (reporting déjà généré puis corrigé : semaines, Retenu, montants et virements de l'équilibrage S1 sont repris)</div></div>
   </div>
   <div id="banner" class="banner"></div>
 
@@ -2048,6 +2049,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       B.months.forEach((mo, i) => { const s = sum(B.lines.map((l) => l.v[i] || 0)); const t = B.total[i] || 0; if (Math.abs(s - t) > 1 && mo.y * 12 + mo.m >= sitM - 12 && mo.y * 12 + mo.m <= sitM + 3) notes.push(ent + " – " + MOIS_FR[mo.m] + " " + mo.y + " : somme des lignes (" + Math.round(s) + " €) ≠ ligne TOTAL (" + Math.round(t) + " €)."); });
     });
     ded.forEach((x) => { if (x.eur != null) x.fcfa = x.eur * FX; });
+    const edit = src.edit ? CHR.applyEdits(fon, ded, src.edit, WK, FX) : null;
+    if (edit) edit.notes.forEach((n) => notes.push(n));
 
     // tri
     const WR = (w) => { const i = WK.indexOf(w); return i >= 0 ? i : 9; };
@@ -2111,7 +2114,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     T.defProj = -sum(P.filter((p) => p.solde < -0.05).map((p) => p.solde));
     T.def = T.defSoc + T.defProj;
 
-    return { sit, W, WK, fon, ded, acc, E, DED, P, T, rents, notes, recapWk, recapDate, opt };
+    return { sit, W, WK, fon, ded, acc, E, DED, P, T, rents, notes, recapWk, recapDate, opt, edit, eqTransfers: src.edit && src.edit.hasEq ? src.edit.transfers : undefined };
   };
 })();
 
@@ -2170,6 +2173,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     for (const [k, v] of map) if (b.indexOf(k) === 0 || n.toUpperCase().indexOf(k) === 0) return v;
     return n;
   };
+  CHR.EQ_ENT = { FIRST: "SCI FIRST", RIVIERA: "RIVIERA PARK", "INFI SOFT": "INFI" };
   CHR.equilibrage = function (C, opt) {
     opt = opt || {};
     const wk = C.WK[0];
@@ -2183,6 +2187,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     Object.keys(entsWithFlows).forEach((e) => { if (!cols.some((c) => c.ent === e && c.kind === "FONC")) cols.push({ i: -1, a: null, ent: e, name: e + " (paiement par PICI)", short: "payé par PICI", bal: 0, kind: "FONC", virtual: true }); });
     cols.sort((x, y) => rank(x.ent) - rank(y.ent) || y.bal - x.bal);
     cols.forEach((c, j) => (c.j = j));
+    cols.forEach((c) => (c.label = (CHR.EQ_ENT[c.ent] || c.ent) + " – " + c.short));
     const payer = (ent, kind) => { const cs = cols.filter((c) => c.ent === ent && c.kind === kind); return cs.length ? cs.reduce((a, b) => (b.bal > a.bal ? b : a)) : null; };
     // affectation des flux S1
     const grid = {};   // row|j -> M
@@ -2202,8 +2207,14 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const solde = (c) => c.bal + sum(Object.keys(grid).filter((k) => +k.split("|")[1] === c.j).map((k) => grid[k]));
     const transfers = [];
     const move = (type, s, d, t, why) => { add(type, s, -t); add(type, d, t); transfers.push({ type, src: s, dst: d, amt: t, why }); };
+    const given = opt.transfers !== undefined ? opt.transfers : C.eqTransfers;
+    const unknown = [];
+    if (given) given.forEach((t) => {
+      const s = cols.find((c) => c.label === t.src), d = cols.find((c) => c.label === t.dst);
+      if (s && d) move(t.type, s, d, t.amt / M, t.why || ""); else unknown.push(t);
+    });
     // 1. autres nivellements (même entité)
-    cols.filter((c) => c.kind === "FONC" && !c.virtual).forEach((c) => {
+    if (!given) cols.filter((c) => c.kind === "FONC" && !c.virtual).forEach((c) => {
       if (solde(c) >= -0.0005) return;
       cols.filter((s) => s.ent === c.ent && s !== c && (s.kind === "FONC" || (s.kind === "ARB" && opt.useArb !== false)) && !s.virtual).sort((a, b) => solde(b) - solde(a)).forEach((s) => {
         const av = solde(s), gap = -solde(c);
@@ -2217,7 +2228,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     srcEnts.forEach((e) => cols.filter((c) => c.ent === e && c.kind === "FONC" && !c.virtual).sort((a, b) => solde(b) - solde(a)).forEach((c) => srcs.push(c)));
     const legalNeed = (c) => -sum(CHR.EQ_ROWS.filter((r) => r.legal).map((r) => grid[r.r + "|" + c.j] || 0));
     const targets = cols.filter((c) => c.kind === "FONC" && srcEnts.indexOf(c.ent) < 0 && solde(c) < -0.0005).sort((a, b) => solde(b) - solde(a));
-    ["légal", "fournisseurs"].forEach((phase) => targets.forEach((c) => {
+    if (!given) ["légal", "fournisseurs"].forEach((phase) => targets.forEach((c) => {
       let gap = phase === "légal" ? Math.max(0, Math.min(-solde(c), legalNeed(c) - Math.max(0, c.bal))) : -solde(c);
       srcs.forEach((s) => {
         const av = solde(s) - minKeep;
@@ -2228,7 +2239,71 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     }));
     transfers.forEach((t) => (t.amt = Math.round(t.amt * M)));
     const reste = sum(cols.map((c) => Math.max(0, -solde(c))));
-    return { wk, cols, grid, transfers, reste, soldes: cols.map(solde) };
+    return { wk, cols, grid, transfers, reste, soldes: cols.map(solde), given: !!given, unknown };
+  };
+})();
+
+/* ---------- reporting modifié à la main : semaines, Retenu, montants et virements repris ---------- */
+(function () {
+  "use strict";
+  const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+  const str = (v) => (v == null ? "" : String(v).trim());
+  CHR.parseEdited = function (wb) {
+    const find = (n) => wb.SheetNames.find((x) => RCI.util.norm(x) === RCI.util.norm(n));
+    const rows = (n) => { const sh = find(n); return sh ? XLSX.utils.sheet_to_json(wb.Sheets[sh], { header: 1, raw: true, defval: null }) : []; };
+    const fon = [], ded = [];
+    rows("Détail fonctionnement").slice(4).forEach((r) => {
+      const fcfa = num(r[4]);
+      if (!str(r[0]) || fcfa == null) return;
+      fon.push({ wk: str(r[0]), ent: str(r[1]), nat: str(r[2]), lib: str(r[3]), fcfa, ret: str(r[6]).toUpperCase() === "N" ? "N" : "O" });
+    });
+    rows("Détail projets & dettes").slice(4).forEach((r) => {
+      if (!str(r[0])) return;
+      const eur = num(r[7]), fcfa = num(r[8]);
+      if (eur == null && fcfa == null) return;
+      ded.push({ wk: str(r[0]), key: str(r[1]), ent: str(r[2]), nat: str(r[3]), code: str(r[4]), lib: str(r[5]), entr: str(r[6]), eur, fcfa, ret: str(r[9]).toUpperCase() === "N" ? "N" : "O" });
+    });
+    const eq = rows("Équilibrage S1");
+    const TYPES = ["NIVELLEMENT VIA PICI", "AUTRES NIVELLEMENTS"];
+    const h = eq.findIndex((r) => RCI.util.norm(str(r[0])) === "type de nivellement");
+    const transfers = [];
+    if (h >= 0) for (let i = h + 1; i < eq.length; i++) {
+      const r = eq[i], t = str(r[0]).toUpperCase();
+      if (RCI.util.norm(str(r[4])) === "total des virements") break;
+      const amt = num(r[7]);
+      if (TYPES.indexOf(t) >= 0 && amt && str(r[2]) && str(r[4])) transfers.push({ type: t, src: str(r[2]), dst: str(r[4]), amt, why: str(r[8]) });
+    }
+    return { fon, ded, transfers, hasEq: h >= 0 };
+  };
+  CHR.applyEdits = function (fon, ded, ed, WK, FX) {
+    const notes = [], moved = [], removed = [], added = [], changed = [];
+    const r2 = (v) => Math.round(v);
+    const kF = (x) => [x.ent, x.nat, x.lib, r2(x.fcfa)].join("|");
+    const kD = (x, useEur) => [x.key, x.nat, x.code, x.lib, useEur ? r2(x.eur * 100) : r2(x.fcfa)].join("|");
+    const sync = (list, edits, keyG, keysE, mk) => {
+      const pool = {};
+      list.forEach((x, i) => keyG(x).forEach((k) => (pool[k] = pool[k] || []).push(i)));
+      const used = {};
+      edits.forEach((e) => {
+        let hit = -1;
+        keysE(e).some((k) => (pool[k] || []).some((i) => { if (!used[i]) { hit = i; return true; } return false; }));
+        if (hit < 0) { const n = mk(e); list.push(n); used[list.length - 1] = 1; added.push(n); return; }
+        used[hit] = 1;
+        const x = list[hit];
+        if (WK.indexOf(e.wk) >= 0 && e.wk !== x.wk) { moved.push({ ent: x.ent, nat: x.nat, lib: x.lib, fcfa: x.fcfa, from: x.wk, to: e.wk }); x.wk = e.wk; }
+        if (e.ret !== x.ret) { changed.push({ ent: x.ent, lib: x.lib, fcfa: x.fcfa, ret: e.ret }); x.ret = e.ret; }
+      });
+      list.forEach((x, i) => { if (!used[i] && x.ret === "O" && WK.indexOf(x.wk) >= 0) { x.ret = "N"; x.lib += " (retirée du reporting modifié)"; removed.push(x); } });
+    };
+    sync(fon, ed.fon, (x) => [kF(x)], (e) => [kF(e)], (e) => Object.assign({ src: "Reporting modifié" }, e));
+    sync(ded, ed.ded, (x) => (x.eur != null ? [kD(x, true)] : [kD(x, false)]), (e) => [e.eur != null ? kD(e, true) : null, e.fcfa != null ? kD(e, false) : null].filter(Boolean),
+      (e) => Object.assign({}, e, { fcfa: e.fcfa != null ? e.fcfa : e.eur * FX }));
+    const M = (v) => (Math.round(Math.abs(v) / 1e5) / 10).toFixed(1).replace(".", ",") + " M";
+    if (moved.length) notes.push("Reporting modifié : " + moved.length + " ligne(s) changée(s) de semaine – " + moved.slice(0, 5).map((x) => x.ent + " " + x.lib + " " + M(x.fcfa) + " " + x.from + "→" + x.to).join(", ") + ".");
+    if (changed.length) notes.push("Reporting modifié : " + changed.length + " ligne(s) avec Retenu modifié.");
+    if (added.length) notes.push("Reporting modifié : " + added.length + " ligne(s) ajoutée(s) ou montant(s) modifié(s).");
+    if (removed.length) notes.push("Reporting modifié : " + removed.length + " ligne(s) des sources absente(s) du fichier, passée(s) en Retenu = N.");
+    return { moved, changed, added, removed, notes, transfers: ed.transfers, hasEq: ed.hasEq };
   };
 })();
 
@@ -2681,6 +2756,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Projets", meta.files.bilans.join(" ; ") + " – « Marchés et Depenses HT », € HT ; statut lu sur la couleur de police (vert « Montant à étaler » et rouge « FNP » = non réglé, bleu « Total facturé » = réglé). Semaine des paiements du mois suivant : PICI Projets de l'audit."],
       ["Loyers", meta.files.rents || "Aucun état des loyers chargé."],
       ["SCO AO", meta.files.chris || "Aucun reporting de Christophe chargé : SCO AO sans flux."],
+      meta.files.edit ? ["Mises à jour", meta.files.edit + " – reporting modifié : semaines, Retenu, montants et virements de l'équilibrage S1 repris. " + ((C.edit && C.edit.notes.join(" ")) || "")] : null,
       ["", ""],
       ["Règles de semaine", ""],
       ["S1", "Semaine du " + U.ddmm(W[0].d0) + " au " + U.ddmm(W[0].d1) + " : toutes les antériorités (semaines de l'audit antérieures, factures et cash plans non réglés jusqu'au mois de la situation)."],
@@ -2702,7 +2778,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     ];
     let mr = 1;
     set(ME, "A1", "Méthode, règles de semaine et sources", { font: { bold: true, size: 14 } }); mr = 3;
-    lines.forEach(([a, b]) => {
+    lines.filter(Boolean).forEach(([a, b]) => {
       if (a && !b) { set(ME, "A" + mr, a, { font: { bold: true }, fill: BLEU }); ME.getCell("B" + mr).fill = fill(BLEU); }
       else { set(ME, "A" + mr, a, { font: { bold: true }, al: { vertical: "top", wrapText: true } }); set(ME, "B" + mr, b, { al: { vertical: "top", wrapText: true } }); }
       mr++;
@@ -2715,7 +2791,6 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const { set, rngF, rngP, posName, posRow, B4, fill, F, BLEU, VERT, NUM } = h;
     const EQd = CHR.equilibrage(C);
     const cols = EQd.cols, wk = EQd.wk;
-    cols.forEach((c) => (c.label = ({ FIRST: "SCI FIRST", RIVIERA: "RIVIERA PARK", "INFI SOFT": "INFI" }[c.ent] || c.ent) + " – " + c.short));
     const NUM0 = '#,##0;-#,##0;"-"';
     const L = (j) => ws.getColumn(2 + j).letter;
     const W = C.W[0];
@@ -2936,13 +3011,14 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
           s.addText(it[0], { x: x + 0.35, y, w: 0.46, h: 0.46, fontFace: F, fontSize: 13, bold: true, color: "FFFFFF", align: "center", margin: 0, valign: "middle", isTextBox: true });
           s.addText(it[1], { x: x + 1.0, y, w: 4.7, h: 0.46, fontFace: F, fontSize: 15, color: TXT, margin: 0, valign: "middle", isTextBox: true });
         });
-        s.addText(key, { x: x + 0.35, y: 4.6, w: 5.3, h: 0.8, fontFace: F, fontSize: 14, bold: true, color: NAVY, margin: 0, valign: "top", isTextBox: true });
-        s.addText(foot, { x: x + 0.35, y: 5.85, w: 5.3, h: 0.5, fontFace: F, fontSize: 10.5, color: GREY, margin: 0, valign: "top", isTextBox: true });
+        const ky = 3.05 + 3 * 0.68 + 0.05;
+        s.addText(key, { x: x + 0.35, y: ky, w: 5.3, h: 0.75, fontFace: F, fontSize: 14, bold: true, color: NAVY, margin: 0, valign: "top", isTextBox: true });
+        s.addText(foot, { x: x + 0.35, y: Math.max(5.85, ky + 0.8), w: 5.3, h: 0.5, fontFace: F, fontSize: 10.5, color: GREY, margin: 0, valign: "top", isTextBox: true });
       };
       block(0.5, "A. Besoin de trésorerie", "Fonctionnement, projets et dette, par semaine", [["3", "Besoin par semaine et déficits à couvrir"]],
         M_(T.tot) + " à payer de S1 à S5, dont " + M_(T.totWk[0]) + " dès S1 ; " + M_(T.def) + " de déficits",
         "Fournisseurs, impôts, cotisations et salaires des sociétés ; cash plans des projets ; service de la dette");
-      block(6.85, "B. Paiement", "Comptes bancaires mobilisables au " + sitS, [["4", "Comptes de paiement par entité et nature"], ["5", "Options de couverture et décisions"]],
+      block(6.85, "B. Paiement", "Comptes bancaires mobilisables au " + sitS, [["4", "Comptes de paiement par entité et nature"], ["5", "Options de couverture et décisions"], ["6", "Équilibrage S1 : virements et reste à financer"]],
         "Couverture des déficits : crédit spot, avances intragroupe ou comptes à arbitrer",
         "Comptes « Dédié besoin de fonctionnement » des sociétés, comptes « Dédié paiement CPI » des projets, service de la dette");
       footer(s, 2);
@@ -3045,6 +3121,70 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       s.addText(runs, { x: 0.7, y: boxY + 0.1, w: 5.9, h: boxH - 0.18, fontFace: F, margin: 0, valign: "top", isTextBox: true });
       footer(s, 5);
     }
+    // ---- 6. équilibrage S1 ----
+    {
+      const EQ = CHR.equilibrage(C);
+      const s = pres.addSlide();
+      const W1 = W[0];
+      header(s, "B. Paiement – 3. Équilibrage " + EQ.wk, "Semaine du " + U.ddmm(W1.d0) + " au " + U.dmy(W1.d1) + " : flux à payer, virements et reste à financer par compte – MFCFA");
+      const NIV = CHR.EQ_ROWS.filter((r) => r.niv).map((r) => r.r);
+      const colSum = (c, niv) => sum(Object.keys(EQ.grid).filter((k) => +k.split("|")[1] === c.j && (NIV.indexOf(k.split("|")[0]) >= 0) === niv).map((k) => EQ.grid[k]));
+      const pay = -sum(EQ.cols.map((c) => Math.min(0, colSum(c, false))));
+      const trf = sum(EQ.transfers.map((t) => t.amt)) / 1e6;
+      const cw = 2.93, gx = 0.2;
+      kpi(s, 0.5, 1.35, cw, 0.9, M_(pay), "À payer en " + EQ.wk + " (fonctionnement, projets, échéances)", RED);
+      kpi(s, 0.5 + (cw + gx), 1.35, cw, 0.9, M_(sum(EQ.cols.map((c) => c.bal))), "Soldes au " + U.ddmm(C.sit) + " des comptes payeurs");
+      kpi(s, 0.5 + 2 * (cw + gx), 1.35, cw, 0.9, EQ.transfers.length ? M_(trf) : "À décider", EQ.transfers.length ? EQ.transfers.length + " virement(s) de nivellement saisi(s)" : "Aucun virement de nivellement saisi");
+      kpi(s, 0.5 + 3 * (cw + gx), 1.35, cw, 0.9, M_(EQ.reste), "Reste à financer en " + EQ.wk + (EQ.transfers.length ? " après virements" : " avant nivellement"), RED);
+      // regroupement par entité / nature de compte
+      const grpName = (c) => (CHR.EQ_ENT[c.ent] || c.ent) + (c.kind === "PROJ" ? " – projet" : c.kind === "DETTE" ? " – dette" : c.kind === "ARB" ? " – " + c.short + " (à arbitrer)" : "");
+      const G = [];
+      EQ.cols.forEach((c, i) => {
+        const n = grpName(c);
+        let g = G.find((x) => x.n === n);
+        if (!g) G.push((g = { n, bal: 0, flux: 0, niv: 0, th: 0, reste: 0 }));
+        g.bal += c.bal; g.flux += colSum(c, false); g.niv += colSum(c, true); g.th += EQ.soldes[i]; g.reste += Math.max(0, -EQ.soldes[i]);
+      });
+      const rowsG = G.filter((g) => [g.bal, g.flux, g.niv].some((v) => Math.abs(v) > 0.05));
+      const z = (v) => (Math.abs(v) < 0.05 ? "–" : fmt(v));
+      const rows = [[hcell("Entité / compte", { align: "left" }), hcell("Solde " + U.ddmm(C.sit)), hcell("Flux " + EQ.wk), hcell("Virements"), hcell("Solde théorique"), hcell("Reste à financer")]];
+      rowsG.forEach((g) => rows.push([LB(g.n), cell(z(g.bal)), cell(z(g.flux)), cell(z(g.niv)), g.th < -0.05 ? NEG(fmt(g.th)) : POS(z(g.th)), g.reste > 0.05 ? NEG(fmt(g.reste)) : cell("–")]));
+      rows.push([W_("Total", { align: "left" }), W_(fmt(sum(rowsG.map((g) => g.bal)))), W_(fmt(sum(rowsG.map((g) => g.flux)))), W_(z(sum(rowsG.map((g) => g.niv)))), W_(fmt(sum(rowsG.map((g) => g.th)))), W_(fmt(EQ.reste))]);
+      const rh = rows.length > 15 ? 0.245 : 0.27, fsT = rows.length > 15 ? 8.5 : 9.5;
+      rows.forEach((r) => r.forEach((c) => (c.options.fontSize = fsT)));
+      s.addTable(rows, { x: 0.5, y: 2.42, w: 7.55, colW: [2.65, 0.98, 0.98, 0.98, 0.98, 0.98], rowH: rh, fontFace: F });
+      // panneau droit
+      const px = 8.3, pw = 4.53;
+      const avail = EQ.cols.map((c, i) => ({ c, v: EQ.soldes[i] })).filter((x) => x.v > 0.5 && (x.c.kind === "FONC" || x.c.kind === "ARB") && !x.c.virtual).sort((a, b) => b.v - a.v);
+      let runs = [];
+      if (EQ.transfers.length) {
+        runs.push({ text: "Virements saisis", options: { bold: true, color: NAVY, fontSize: 12, breakLine: true, paraSpaceAfter: 4 } });
+        EQ.transfers.slice().sort((a, b) => b.amt - a.amt).slice(0, 7).forEach((t) => runs.push({ text: t.src.label + " → " + t.dst.label + " : " + fmt(t.amt / 1e6), options: { color: TXT, fontSize: 9.5, bullet: { indent: 10 }, breakLine: true } }));
+        if (EQ.transfers.length > 7) runs.push({ text: "… et " + (EQ.transfers.length - 7) + " autre(s), voir le reporting.", options: { color: GREY, italic: true, fontSize: 9.5, breakLine: true } });
+      } else {
+        runs.push({ text: "Disponible pour le nivellement", options: { bold: true, color: NAVY, fontSize: 12, breakLine: true, paraSpaceAfter: 4 } });
+        avail.slice(0, 6).forEach((x) => runs.push({ text: x.c.label + " : " + fmt(x.v) + (x.c.kind === "ARB" ? " (à arbitrer)" : ""), options: { color: TXT, fontSize: 10, bullet: { indent: 10 }, breakLine: true } }));
+      }
+      if (runs.length) runs[runs.length - 1].options.breakLine = false;
+      s.addShape(pres.shapes.RECTANGLE, { x: px, y: 2.42, w: pw, h: 2.05, fill: { color: BG }, line: { color: BG, width: 1 } });
+      s.addText(runs, { x: px + 0.18, y: 2.5, w: pw - 0.3, h: 1.9, fontFace: F, margin: 0, valign: "top", isTextBox: true });
+      const ed = C.edit || { moved: [] };
+      const mv = {};
+      ed.moved.forEach((m) => { const k = m.ent + "|" + m.nat + "|" + m.to; mv[k] = mv[k] || { ent: m.ent, nat: m.nat.toLowerCase(), to: m.to, v: 0, n: 0 }; mv[k].v += -m.fcfa / 1e6; mv[k].n++; });
+      const deficit = EQ.cols.map((c, i) => ({ c, v: EQ.soldes[i] })).filter((x) => x.v < -0.5).sort((a, b) => a.v - b.v);
+      const dec = [
+        EQ.transfers.length ? "Valider les " + EQ.transfers.length + " virements saisis (" + M_(trf) + ")." : "Fixer les virements de nivellement (PICI, SCI FIRST" + (avail.some((x) => x.c.kind === "ARB") ? ", compte à arbitrer" : "") + ") : le reporting les recalcule.",
+        "Financer le reste de " + M_(EQ.reste) + ", dont " + deficit.slice(0, 3).map((x) => x.c.label + " " + fmt(-x.v)).join(", ") + ".",
+        Object.keys(mv).length ? "Décalages appliqués : " + Object.keys(mv).map((k) => mv[k].nat + " " + mv[k].ent + " " + M_(mv[k].v) + " en " + mv[k].to).join(" ; ") + "." : null,
+        "Prioriser impôts, cotisations et salaires si le financement est partiel.",
+      ].filter(Boolean);
+      const dr = [{ text: "Décisions attendues", options: { bold: true, color: GOLD, fontSize: 12.5, breakLine: true, paraSpaceAfter: 5 } }];
+      dec.forEach((d, i) => dr.push({ text: d, options: { color: "FFFFFF", fontSize: 10, bullet: { indent: 10 }, paraSpaceAfter: 3, breakLine: i < dec.length - 1 } }));
+      s.addShape(pres.shapes.RECTANGLE, { x: px, y: 4.6, w: pw, h: 2.3, fill: { color: NAVY }, line: { color: NAVY, width: 1 } });
+      s.addText(dr, { x: px + 0.18, y: 4.7, w: pw - 0.3, h: 2.12, fontFace: F, margin: 0, valign: "top", isTextBox: true });
+      note(s, "Reste à financer = somme des soldes théoriques négatifs, compte par compte (détail dans l'onglet « Équilibrage " + EQ.wk + " » du reporting).", 6.98);
+      footer(s, 6);
+    }
     return pres;
   };
 })();
@@ -3084,7 +3224,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       try { rawNames = XLSX.read(buf, { type: "array", bookSheets: true }).SheetNames; names = rawNames.map(norm); }
       catch (e) { banner("« " + file.name + " » n'est pas un classeur Excel lisible."); return; }
       var has = function (s) { return names.some(function (n) { return n.indexOf(s) === 0; }); };
-      var kind = has("recap semaine hors intragroupe") ? "audit" : names.indexOf(RCI.BILAN_SHEET) >= 0 ? "bil" : has("civ position") ? "pos" : names.indexOf("reporting hebdo") >= 0 ? "chris" : "rents";
+      var kind = has("detail fonctionnement") && has("detail projets") ? "edit" : has("recap semaine hors intragroupe") ? "audit" : names.indexOf(RCI.BILAN_SHEET) >= 0 ? "bil" : has("civ position") ? "pos" : names.indexOf("reporting hebdo") >= 0 ? "chris" : "rents";
       return Promise.resolve().then(function () {
         if (kind === "audit") {
           var wb = RCI.readWorkbook(buf, false);
@@ -3118,6 +3258,9 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
           var p = RCI.parsePosition(RCI.readWorkbook(buf, false));
           st.pos = p; st.names.pos = file.name;
           setFile("pos", "ok", "✓ " + esc(file.name) + "<br>" + p.items.length + " comptes" + (p.date ? " · soldes au " + RCI.fd(p.date) : ""));
+        } else if (kind === "edit") {
+          st.edit = CHR.parseEdited(XLSX.read(buf, { type: "array" })); st.names.edit = file.name;
+          setFile("edit", "ok", "✓ " + esc(file.name) + "<br>" + st.edit.fon.length + " lignes fonctionnement · " + st.edit.ded.length + " lignes projets & dettes · " + (st.edit.hasEq ? st.edit.transfers.length + " virement(s) saisi(s)" : "pas d'équilibrage"));
         } else if (kind === "chris") {
           st.chrisWb = XLSX.read(buf, { type: "array", cellDates: true }); st.names.chris = file.name;
           setFile("chris", "ok", "✓ " + esc(file.name) + "<br>flux SCO AO lus au calcul");
@@ -3176,7 +3319,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         }
       } catch (e) { st.L = null; console.error(e); }
       var chris = st.chrisWb ? CHR.parseChristophe(st.chrisWb, o.sitDate || st.pos.date) : [];
-      st.C = CHR.compute({ recap: st.audit.recap, recapD: st.recapD, supp: st.audit.supp, pos: st.pos, rents: st.rents, bilans: bil, pici: st.pici, chris: chris }, o);
+      st.C = CHR.compute({ recap: st.audit.recap, recapD: st.recapD, supp: st.audit.supp, pos: st.pos, rents: st.rents, bilans: bil, pici: st.pici, chris: chris, edit: st.edit }, o);
       st.CMP = CHR.compare(st.L, st.C, st.recapD);
       render();
     } catch (e) { banner("Erreur de calcul : " + e.message); st.C = null; console.error(e); }
@@ -3227,7 +3370,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   }
   $("goX").onclick = function () {
     run(this, function () {
-      var meta = { files: { pos: st.names.pos, audit: st.names.audit, bilans: Object.keys(st.bilans).map(function (k) { return st.bilans[k].file; }), rents: st.names.rents, chris: st.names.chris } };
+      var meta = { files: { pos: st.names.pos, audit: st.names.audit, bilans: Object.keys(st.bilans).map(function (k) { return st.bilans[k].file; }), rents: st.names.rents, chris: st.names.chris, edit: st.names.edit } };
       return CHR.buildExcel(st.C, st.L, st.CMP, meta).then(function (buf) { var n = "Reporting_Hebdo_CIV_" + stamp() + ".xlsx"; dl(buf, n, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); return n; });
     });
   };
