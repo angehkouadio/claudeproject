@@ -118,6 +118,7 @@
         <div class="ents" style="margin-top:10px"><label><input type="checkbox" id="o-tbd"> Compter les comptes à destination non tranchée (ex. BNI-RIVIERA courant) dans la trésorerie des sociétés (Christophe et RCI)</label></div>
         <label for="o-projWeek">Projets : semaine des paiements du mois suivant non situés dans PICI Projets</label>
         <select id="o-projWeek"><option>S1</option><option selected>S2</option><option>S3</option><option>S4</option></select>
+        <div class="ents" style="margin-top:10px"><label><input type="checkbox" id="o-anteRCI" checked> Présentation RCI : reporter sur le premier mois (S1) les montants des cash plans encore non réglés des mois antérieurs</label></div>
         <div class="ents" style="margin-top:10px"><label><input type="checkbox" id="o-scoPrior" checked> SCO AO : reprendre en S1 les flux des semaines antérieures à la situation</label></div>
       </div>
       <div class="card">
@@ -1358,7 +1359,7 @@ var RCI = (typeof RCI !== "undefined") ? RCI : {};
     function buildCP() {
       const C = M.cp, CP = C.projects, MS = C.months, nm = MS.length;
       const AB = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
-      const mlab = (x) => AB[x.m];
+      const mlab = (x) => AB[x.m] + (x === MS[0] && C.antM > 0.05 ? " + ant." : "");
       const cln = (n) => {
         let t = String(n || "").replace(/^\d{1,2}[A-Z]?\s*-?\s*/, "").replace(/^[A-Z]{3,4}-/, "").trim() || String(n);
         const SMALL = ["DE", "DU", "LA", "LE", "LES", "ET", "DES", "AU", "AUX", "EN"];
@@ -1422,7 +1423,7 @@ var RCI = (typeof RCI !== "undefined") ? RCI : {};
         });
         const ffTxt = CP.filter((c) => Math.abs(c.ff) > 0.05).map((c) => c.ent + " " + fmt(c.ff) + " M").join(" ; ");
         bl.push(["Frais financiers inclus : ", fmt(C.ff) + " M (" + ffTxt + ") : coupons, frais intercalaires et commissions d'engagement, isolés ci-dessus." + (ffoM > 0.05 ? " S'y ajoutent, classés en autres dépenses, " + CP.map((c) => ffo(c).map((l) => cln(l.name) + " " + fmt(l.totM) + " M (" + c.ent + ")").join(", ")).filter(Boolean).join(" ; ") + "." : "") + (M.fin.loanTot > 0.05 ? " Les frais de prêts du recap (" + M.fin.loans.map((l) => l.name.toUpperCase() + " " + fmt(l.amt) + " M").join(" ; ") + ") en relèvent et ne sont pas ajoutés." : "")]);
-        bl.push(["Base : ", "montants HT (TVA en sus), mois " + per + " des cash plans recalés, logique des montants communiqués par la Direction de programme. Pour mémoire, l'audit S1 à S4 retient " + fmt(CP.reduce((a, c) => a + c.audit.h4 - c.loanH4, 0)) + " M TTC sur les projets."]);
+        bl.push(["Base : ", "montants HT (TVA en sus), mois " + per + (C.antM > 0.05 ? " ; antériorités non réglées (" + fmt(C.antM) + " M, " + CP.filter((c) => c.antM > 0.05).map((c) => c.ent + " " + fmt(c.antM)).join(", ") + ") reportées sur " + MOIS_FR[MS[0].m] : "") + " des cash plans recalés, logique des montants communiqués par la Direction de programme. Pour mémoire, l'audit S1 à S4 retient " + fmt(CP.reduce((a, c) => a + c.audit.h4 - c.loanH4, 0)) + " M TTC sur les projets."]);
         bullets(s, bl, 0.5, ty, 12.3, 6.92 - ty, 10.5);
         footer(s, 7);
         s.addNotes("Source de calcul : feuille « Marchés et Dépenses HT » de chaque bilan financier (" + CP.map((c) => c.file).join(" ; ") + "), ligne TOTAL et sections, colonnes " + per + ". Montants en € HT convertis à " + fx + " FCFA / €. Ce sont les montants communiqués par la Direction de programme (" + CP.map((c) => subP(c) + " " + k(c.totE) + " K€ HT").join(", ") + "). Frais financiers = section FFI (intérêts sur compte courant, produits financiers, frais intercalaires, commissions d'engagement, coupons). Les remboursements de prêts TERASSON / RIVIERA du recap ne sont pas ajoutés (déjà couverts par cette section) et restent hors fonctionnement.");
@@ -2023,7 +2024,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         cells.forEach((x) => { const k = x.mo.y + "-" + pad(x.mo.m + 1); info.all[k] = (info.all[k] || 0) + x.v; });
         const ant = unpaid.filter((x) => mIdx(x) <= sitM), cur = unpaid.filter((x) => mIdx(x) === sitM + 1), nxt = unpaid.filter((x) => mIdx(x) === sitM + 2);
         const base = { key: ent + "-PROJET", ent, nat: l.sec, code: l.code, lib: l.name, entr: l.entr || "", ret: "O" };
-        if (ant.length) { const v = sum(ant.map((x) => x.v)); info.ant += v; ded.push(Object.assign({ wk: "S1", eur: -v, per: "Antériorité (" + ant.map((x) => MOIS_FR[x.mo.m].slice(0, 4) + ". " + x.mo.y).join(", ") + ")" }, base)); }
+        if (ant.length) { const v = sum(ant.map((x) => x.v)); info.ant += v; ded.push(Object.assign({ wk: "S1", eur: -v, per: "Antériorité (" + ant.map((x) => ["janv.","févr.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."][x.mo.m] + " " + x.mo.y).join(", ") + ")" }, base)); }
         if (cur.length) {
           const v = sum(cur.map((x) => x.v)); info.cur += v;
           const curMonth = cur[0].mo;
@@ -2106,6 +2107,33 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   };
 })();
 
+/* ---------- antériorités des cash plans reportées sur le premier mois de la fenêtre RCI ---------- */
+(function () {
+  "use strict";
+  CHR.foldAnte = function (B, startKey) {
+    const i0 = B.months.findIndex((m) => m.key === startKey);
+    if (i0 <= 0 || !B.colors || !B.legend) return { bil: B, eur: 0, lines: [] };
+    const unpaid = B.legend.unpaid;
+    const add = (arr, v) => { const a = arr.slice(); a[i0] = (a[i0] || 0) + v; return a; };
+    const secAdd = {}, lines = [];
+    let tot = 0;
+    const nl = B.lines.map((l) => {
+      let v = 0;
+      const mo = [];
+      for (let i = 0; i < i0; i++) {
+        const x = l.v[i] || 0;
+        if (Math.abs(x) >= 0.005 && unpaid.indexOf(B.colors[l.r + "," + B.months[i].c]) >= 0) { v += x; mo.push(B.months[i]); }
+      }
+      if (!v) return l;
+      tot += v; secAdd[l.sec] = (secAdd[l.sec] || 0) + v;
+      lines.push({ code: l.code, name: l.name, sec: l.sec, eur: v, months: mo });
+      return Object.assign({}, l, { v: add(l.v, v) });
+    });
+    const ns = B.sections.map((s) => (secAdd[s.name] ? Object.assign({}, s, { v: add(s.v, secAdd[s.name]) }) : s));
+    return { bil: Object.assign({}, B, { lines: nl, sections: ns, total: add(B.total, tot) }), eur: tot, lines };
+  };
+})();
+
 /* =====================================================================
    CHR.compare : rapprochement reporting de Christophe ↔ présentation RCI (Laureen)
    L = modèle RCI.compute ; C = modèle CHR.compute ; rd = détail du RECAP
@@ -2116,6 +2144,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   const M = 1e6;
   const f1 = (v) => (Math.round(v * 10) / 10).toFixed(1).replace(".", ",").replace(/\B(?=(\d{3})+(?!\d))/g, " ");
   const MOIS = RCI.util.MOIS_FR;
+  const AB = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
   const pad = (n) => String(n).padStart(2, "0");
 
   CHR.compare = function (L, C, rd) {
@@ -2180,14 +2209,18 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       const winKeys = cps ? cps.months.map((m) => m.key) : [];
       const toM = (eur) => (eur * CHR.FX) / M;
       const before = Object.keys(p.months).filter((k) => winKeys.length && k < winKeys[0]).sort();
-      if (before.length) {
+      const beforeM = sum(before.map((k) => toM(p.months[k])));
+      if (before.length && cps.antFold) {
+        proj.push({ label: "   dont antériorités (" + before.map((k) => AB[+k.slice(5) - 1] + " " + k.slice(0, 4)).join(", ") + ")", l: lp ? lp.antM || 0 : 0, c: beforeM, d: beforeM - (lp ? lp.antM || 0 : 0), why: "Montants non réglés des mois antérieurs, reportés en S1 / sur le premier mois des deux côtés" });
+      } else if (before.length) {
         const v = sum(before.map((k) => toM(p.months[k])));
-        proj.push({ label: "   Mois antérieurs (" + before.map((k) => MOIS[+k.slice(5) - 1].slice(0, 4) + ". " + k.slice(0, 4)).join(", ") + ")", l: 0, c: v, d: v, why: "Montants encore non réglés, repris en S1 par le reporting ; hors fenêtre de la présentation RCI" });
+        proj.push({ label: "   Mois antérieurs (" + before.map((k) => AB[+k.slice(5) - 1] + " " + k.slice(0, 4)).join(", ") + ")", l: 0, c: v, d: v, why: "Montants encore non réglés, repris en S1 par le reporting ; hors fenêtre de la présentation RCI" });
       }
       winKeys.forEach((k, i) => {
-        const l = lp ? lp.m[i] : 0, c = toM(p.months[k] || 0), all = toM(p.all[k] || 0);
+        const fold = i === 0 && cps.antFold ? beforeM : 0;
+        const l = lp ? lp.m[i] : 0, c = toM(p.months[k] || 0) + fold, all = toM(p.all[k] || 0) + fold;
         const paid = all - c;
-        proj.push({ label: "   " + cps.months[i].label, l, c, d: c - l, why: Math.abs(c - l) < 0.05 ? "Identique" : (paid > 0.05 ? "Montants déjà réglés (police bleue) : " + f1(paid) + " exclus du reporting" : "Écart de lecture des montants") });
+        proj.push({ label: "   " + cps.months[i].label + (fold ? " + antériorités" : ""), l, c, d: c - l, why: Math.abs(c - l) < 0.05 ? "Identique" : (paid > 0.05 ? "Montants déjà réglés (police bleue) : " + f1(paid) + " exclus du reporting" : "Écart de lecture des montants") });
       });
       if (lp) proj.push({ label: "   Trésorerie dédiée (CPI)", l: lp.cash, c: p.cash, d: p.cash - lp.cash, why: Math.abs(p.cash - lp.cash) < 0.05 ? "Identique" : "Comptes CPI différents" });
     });
@@ -2208,7 +2241,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const notes = [];
     if (L) {
       notes.push("Semaines : la présentation RCI suit les semaines de l'audit (" + L.lab.horizon + ") ; le reporting démarre en S1 au " + CHR.util.ddmm(C.W[0].d0) + " et y reporte toutes les antériorités. Les montants de l'audit sont les mêmes, seule leur semaine change.");
-      if (cps) notes.push("Projets : la présentation RCI prend les cash plans de " + cps.per + " (tous montants du mois) ; le reporting prend les montants non réglés (antériorités en S1, mois suivant par semaine, mois d'après pour information).");
+      if (cps) notes.push("Projets : la présentation RCI prend les cash plans de " + cps.per + " (tous montants du mois" + (cps.antFold ? ", antériorités non réglées reportées sur le premier mois" : "") + ") ; le reporting prend les montants non réglés (antériorités en S1, mois suivant par semaine, mois d'après pour information).");
       notes.push("Trésorerie : compte(s) à destination non tranchée " + (C.opt.countTbd ? "comptés" : "non comptés") + " dans le reporting, " + (C.opt.countTbdRCI ? "comptés" : "non comptés") + " dans la présentation RCI.");
       if (onlyC.length) notes.push("Périmètre : " + onlyC.map((x) => x.e).join(", ") + " ne figure(nt) que dans le reporting.");
       notes.push("Droits d'enregistrement : exclus des deux côtés.");
@@ -2900,7 +2933,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       sm.value = st.rents.months.some(function (m) { return m.key === cur; }) ? cur : def.key;
     } else sm.innerHTML = "<option value=''>–</option>";
     sm.disabled = $("o-rentWeek").disabled = !st.rents;
-    ["o-sit", "o-tbd", "o-rentMonth", "o-rentWeek", "o-projWeek", "o-scoPrior"].forEach(function (id) { $(id).onchange = function () { if (id === "o-rentMonth") st.paid = {}; recompute(); }; });
+    ["o-sit", "o-tbd", "o-rentMonth", "o-rentWeek", "o-projWeek", "o-scoPrior", "o-anteRCI"].forEach(function (id) { $(id).onchange = function () { if (id === "o-rentMonth") st.paid = {}; recompute(); }; });
   }
   function opts() {
     var sd = $("o-sit").value ? new Date($("o-sit").value + "T00:00:00Z") : null;
@@ -2911,9 +2944,17 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       banner("");
       var o = opts();
       var bil = Object.keys(st.bilans).map(function (k) { return st.bilans[k]; });
+      var sd0 = o.sitDate || st.pos.date || new Date();
+      var startKey = sd0.getUTCFullYear() + "-" + String(sd0.getUTCMonth() + 1).padStart(2, "0");
+      var folds = bil.map(function (b) { return $("o-anteRCI").checked ? CHR.foldAnte(b, startKey) : { bil: b, eur: 0, lines: [] }; });
       try {
-        st.L = RCI.compute({ recap: st.audit.recap, supp: st.audit.supp, proj: st.audit.proj, tg: st.audit.tg, pos: st.pos, rents: st.rents, bilans: bil },
+        st.L = RCI.compute({ recap: st.audit.recap, supp: st.audit.supp, proj: st.audit.proj, tg: st.audit.tg, pos: st.pos, rents: st.rents, bilans: folds.map(function (f) { return f.bil; }) },
           { sitDate: o.sitDate, countTbd: o.countTbd, rentMonth: o.rentMonth, rentEnt: "FIRST", paid: st.paid, auditFile: st.names.audit, loanProjEnts: o.loanProjEnts, aliases: RCI.defaultAliases, excludeEnts: [], targets: {}, cpN: 3 });
+        if (st.L && st.L.cp) {
+          st.L.cp.antFold = $("o-anteRCI").checked;
+          st.L.cp.antM = folds.reduce(function (a, f) { return a + f.eur; }, 0) * CHR.FX / 1e6;
+          st.L.cp.projects.forEach(function (c) { var f = folds.filter(function (x) { return CHR.canon(x.bil.ent) === CHR.canon(c.ent); })[0]; c.antM = f ? f.eur * CHR.FX / 1e6 : 0; c.antLines = f ? f.lines : []; });
+        }
       } catch (e) { st.L = null; console.error(e); }
       var chris = st.chrisWb ? CHR.parseChristophe(st.chrisWb, o.sitDate || st.pos.date) : [];
       st.C = CHR.compute({ recap: st.audit.recap, recapD: st.recapD, supp: st.audit.supp, pos: st.pos, rents: st.rents, bilans: bil, pici: st.pici, chris: chris }, o);
