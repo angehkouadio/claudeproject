@@ -1949,7 +1949,14 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         const target = sum(rd.four.map((row) => row.v[e0][w]));
         let got = 0;
         nonIntra.forEach((x) => { const v = x.s[w] || 0; if (Math.abs(v) > 0.5) { addF({ wk, ent: e, nat: "FOURNISSEURS - FGX", lib: x.sup, fcfa: -v }); got += v; } });
-        rd.four.slice(1).forEach((row) => { const v = row.v[e0][w]; if (Math.abs(v) > 0.5) { addF({ wk, ent: e, nat: "FOURNISSEURS - FGX", lib: row.label, fcfa: -v }); got += v; } });
+        const key = (t) => norm(t).replace(/[^a-z0-9]/g, "");
+        rd.four.slice(1).forEach((row) => {
+          const v = row.v[e0][w];
+          if (Math.abs(v) <= 0.5) return;
+          const k = key(row.label);
+          if (nonIntra.some((x) => { const ks = key(x.sup); return ks && (ks === k || ks.indexOf(k) >= 0 || k.indexOf(ks) >= 0) && Math.abs((x.s[w] || 0) - v) < 1; })) return;   // déjà dans la balance
+          addF({ wk, ent: e, nat: "FOURNISSEURS - FGX", lib: row.label, fcfa: -v }); got += v;
+        });
         const res = target - got;
         if (Math.abs(res) > 1) addF({ wk, ent: e, nat: "FOURNISSEURS - FGX", lib: "Autres fournisseurs (écart RECAP / balance)", fcfa: -res });
         if (w === 0) S.filter((x) => /intra/i.test(x.flux)).forEach((x) => { if (Math.abs(x.tot) > 0.5) addF({ wk: "S1", ent: e, nat: "FOURNISSEURS - FGX", lib: x.sup + " (intragroupe)", fcfa: -x.tot, ret: "N" }); });
@@ -2088,6 +2095,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       enc: sum(E.map((e) => e.enc)),
       cashSoc: sum(E.map((e) => e.cash)), cashAll: sum(acc.map((a) => a.amt)) / M,
       nonMob: sum(acc.filter((a) => !a.mobil).map((a) => a.amt)) / M,
+      tbd: sum(acc.filter((a) => /ARBITRER$/.test(a.key)).map((a) => a.amt)) / M,
       defSoc: -sum(E.filter((e) => e.solde < -0.05).map((e) => e.solde)),
       nDefSoc: E.filter((e) => e.solde < -0.05).length,
     };
@@ -2736,7 +2744,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       const nP = C.P.filter((p) => p.solde < -0.05).length;
       kpi(s, 0.5, 1.35, cw, 0.98, M_(T.tot), "Besoin S1 à S5 (" + fmt(T.tot / CHR.FX, 1) + " M€) : fonctionnement, projets et dette");
       kpi(s, 0.5 + (cw + gx), 1.35, cw, 0.98, M_(T.totWk[0]), "À régler dès S1 (antériorités incluses), " + Math.round((T.totWk[0] / (T.tot || 1)) * 100) + " % du besoin", RED);
-      kpi(s, 0.5 + 2 * (cw + gx), 1.35, cw, 0.98, M_(T.cashAll), "Trésorerie au " + U.ddmm(C.sit) + ", dont " + M_(T.nonMob) + " non mobilisables");
+      kpi(s, 0.5 + 2 * (cw + gx), 1.35, cw, 0.98, M_(T.cashAll), "Trésorerie au " + U.ddmm(C.sit) + " ; " + M_(T.nonMob - T.tbd) + " bloqués" + (T.tbd > 0.05 ? ", " + M_(T.tbd) + " à arbitrer" : ""));
       kpi(s, 0.5 + 3 * (cw + gx), 1.35, cw, 0.98, M_(T.def), "Déficits à couvrir : " + nP + " projet(s) et " + T.nDefSoc + " société(s)", RED);
       const hdr = [hcell("Décaissements", { align: "left" })].concat(W.map((w) => hcell(w.code + " " + U.ddmm(w.d0))), [hcell("Total S1 à S5"), hcell("Comptes payeurs au " + U.ddmm(C.sit)), hcell("Déficit fin S5")]);
       const row = (lab, wk, cash, def) => [LB(lab)].concat(wk.map((v) => cell(fmt(v))), [cell(fmt(sum(wk)), { bold: true, fill: { color: BG } }), cell(fmt(cash)), def > 0.05 ? NEG(fmt(def)) : cell("–")]);
@@ -2753,8 +2761,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         C.P.length ? ["Projets : ", M_(T.proj) + ". " + C.P.map((p) => p.ent + (p.solde < -0.05 ? " en déficit de " + M_(-p.solde) + (p.soldes.findIndex((v) => v < -0.05) >= 0 ? " dès " + WK[p.soldes.findIndex((v) => v < -0.05)] : "") : " couvert (" + sgn(p.solde) + " M)")).join(" ; ") + "."] : null,
         ["Fonctionnement : ", (defs.length ? "déficits " + defs.slice(0, 6).map((e) => e.e + " " + M_(-e.solde)).join(", ") : "aucun déficit") + (sur.length ? " ; excédents " + sur.slice(0, 3).map((e) => e.e + " " + M_(e.solde)).join(", ") : "") + "."],
       ], 0.5, Math.max(4.85, ty), 12.3, 1.7);
-      const nm = C.acc.filter((a) => !a.mobil && Math.abs(a.amt) > 0.5);
-      note(s, (nm.length ? "Non mobilisables : " + nm.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + "Projets en € HT à 655,957.");
+      const nm = C.acc.filter((a) => !a.mobil && !/ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5), ar = C.acc.filter((a) => /ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5);
+      note(s, (nm.length ? "Non mobilisables : " + nm.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + (ar.length ? "À arbitrer : " + ar.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + "Projets en € HT à 655,957.");
       footer(s, 3);
     }
     // ---- 4. comptes de paiement ----
