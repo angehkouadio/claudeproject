@@ -2782,7 +2782,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const PO = wb2.addWorksheet(posName, { views: [{ state: "frozen", ySplit: 4, showGridLines: false }] });
     const CT = wb2.addWorksheet("Contrôles", { views: [{ showGridLines: false }] });
     const CP = wb2.addWorksheet("Comparaison RCI", { views: [{ showGridLines: false }] });
-    const PX = wb2.addWorksheet("Paiements exécutés", { views: [{ showGridLines: false, state: "frozen", ySplit: 4 }] });
+    const PX = wb.addWorksheet("Paiements exécutés", { views: [{ showGridLines: false, state: "frozen", ySplit: 4 }] });
     const ME = wb2.addWorksheet("Méthode & sources", { views: [{ showGridLines: false }] });
     const T = "'Reporting Hebdo'!$E$3";
     const set = (ws, ref, v, st) => {
@@ -3180,7 +3180,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Loyers", "Encaissement en " + (C.rents ? C.rents.week : "S2") + " (date non précisée dans l'état des loyers)."],
       ["Droits d'enregistrement", "Hors besoin, comme la présentation RCI (lignes conservées avec Retenu = N)."],
       ["Mises à jour", "Soldes : colonne « Solde réel » en FCFA de « Reporting Hebdo » (cellules en jaune, modifiables ; nouveau compte : l'ajouter dans la position CI source). Paiements effectués : montant payé et date dans les feuilles de détail (colonnes en jaune) ; seul le reste à payer alimente le reporting. Paiements non prévus : nouvelles lignes dans les feuilles de détail. Le fichier modifié se réimporte dans le générateur HTML pour refaire la présentation."],
-      ["Paiements exécutés", meta.files.pays ? meta.files.pays + " – chaque paiement est imputé sur les lignes de besoin du bénéficiaire (nom, sinon nature de l'audit PICI Projets), des plus anciennes aux plus récentes ; ils diminuent les prévisions, pas les soldes bancaires. Détail dans la feuille « Paiements exécutés » du fichier de contrôle." : "Aucun fichier de paiements exécutés chargé."],
+      ["Paiements exécutés", meta.files.pays ? meta.files.pays + " – chaque paiement est imputé sur les lignes de besoin du bénéficiaire (nom, sinon nature de l'audit PICI Projets), des plus anciennes aux plus récentes ; ils diminuent les prévisions, pas les soldes bancaires. Détail dans la feuille « Paiements exécutés » du reporting et dans la colonne « Paiement exécuté » des feuilles de détail." : "Aucun fichier de paiements exécutés chargé."],
       ["Comptes indisponibles", (C.accX || []).map((a) => a.name).join(", ") + " : exclus de la position et du reporting (listés pour information en bas des soldes de « Reporting Hebdo »)."],
       ["Dette FIRST", "Échéances des prêts FIRST et loyers à encaisser traités en fonctionnement de FIRST (pas de compte dédié)."],
       ["Prêts des projets", "TERASSON et RIVIERA : frais financiers déjà dans les cash plans, non ajoutés."],
