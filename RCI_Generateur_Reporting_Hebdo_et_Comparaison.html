@@ -2679,24 +2679,27 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     set(ws, "C" + r, "SYNTHÈSE DES BESOINS PAR SEMAINE", { font: { bold: true } }); r++;
     const SY = r;
     const synRows = [["Flux de fonctionnement (frais de structure)", "flux", (w) => sf(w)], ["Flux projets et dettes (comptes dédiés)", "flux", (w) => sp(w)],
-      ["Total des flux de la semaine", "tot"], ["Besoin de financement – sociétés en solde théorique négatif", "needS"], ["Nombre de sociétés en solde théorique négatif", "cnt"],
-      ["Besoin de financement – comptes dédiés en solde théorique négatif", "needD"]];
+      ["Total des flux de la semaine", "tot"], ["Besoin de trésorerie (–) ou Surplus de trésorerie (+) – comptes de sociétés", "netS"],
+      ["Besoin de trésorerie (–) ou Surplus de trésorerie (+) – comptes dédiés", "netD"]];
     synRows.forEach(([lab, kind, fn]) => {
-      const bold = kind === "tot" || kind.indexOf("need") === 0;
+      const bold = kind === "tot" || kind.indexOf("net") === 0;
       set(ws, "C" + r, lab, { font: { bold }, bd: B4 }); ws.getCell("D" + r).border = B4;
       WEEKP.forEach(([a, b], i) => {
         const col = kind === "flux" || kind === "tot" ? a : b;
         let v;
         if (kind === "flux") v = "=" + fn(a + "$2");
         else if (kind === "tot") v = "=" + a + (r - 2) + "+" + a + (r - 1);
-        else if (kind === "needS") v = "=" + entRows.map((x) => "MIN(" + b + x + ",0)").join("+");
-        else if (kind === "needD") v = dedRows.length ? "=" + dedRows.map((x) => "MIN(" + b + x + ",0)").join("+") : 0;
-        else v = "=" + entRows.map((x) => "(" + b + x + "<0)*1").join("+");
-        const c = money(col + r, v, { font: { bold } });
-        if (kind === "cnt") c.numFmt = "0";
-        else money(EURC[i] + r, "=" + col + r + "/$E$3", { font: { bold } });
+        else v = "=" + b + (kind === "netS" ? TS : TD);
+        money(col + r, v, { font: { bold } });
+        money(EURC[i] + r, "=" + col + r + "/$E$3", { font: { bold } });
       });
       SOLDE_COLS.slice(2).forEach((col) => (ws.getCell(col + r).border = wkBd(col, thin, thin)));
+      if (kind.indexOf("net") === 0) {
+        const cols = WEEKP.map(([, b]) => b).concat(EURC);
+        cols.forEach((col) => ws.addConditionalFormatting({ ref: col + r, rules: [
+          { type: "cellIs", operator: "lessThan", formulae: ["-0.5"], style: { font: { color: { argb: "FFC00000" }, bold: true } } },
+          { type: "cellIs", operator: "greaterThan", formulae: ["0.5"], style: { font: { color: { argb: "FF00B050" }, bold: true } } }] }));
+      }
       r++;
     });
     r++;
