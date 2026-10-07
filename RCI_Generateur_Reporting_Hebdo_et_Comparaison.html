@@ -2231,16 +2231,20 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     { r: "AUTRES (ENCAISSEMENTS, DIVERS)", fon: ["AUTRES DÉCAISSEMENTS", "ENCAISSEMENTS"], ded: ["Encaissements de loyers"] },
     { r: "ENREGISTREMENTS", fon: ["ENREGISTREMENTS"] },
   ];
+  const BANKS = [["SOCIETE GENERALE", "SG"], ["STANBIC", "STB"], ["ECOBANK", "ECO"], ["BNI", "BNI"], ["BANK OF AFRICA", "BOA"], ["BOA", "BOA"], ["BANQUE ATLANTIQUE", "BACI"], ["BACI", "BACI"], ["SIB", "SIB"], ["SG", "SG"], ["STB", "STB"], ["ECO", "ECO"]];
+  const bankOf = (a) => {   // banque d'après la colonne Banque, sinon le début du nom du compte
+    const b = String(a.bank || "").toUpperCase().trim(), n = String(a.name || "").toUpperCase().trim();
+    for (const [k, v] of BANKS) if (b && b.indexOf(k) === 0) return v;
+    for (const [k, v] of BANKS) if (n.indexOf(k) === 0) return v;
+    return "";
+  };
   const short = (a) => {
-    const n = a.name;
-    if (/debt service/i.test(n)) return "STB Debt Service";
-    if (/fonds projet/i.test(n)) return "BNI fonds projet";
-    if (/bni/i.test(n) && /courant/i.test(n)) return "BNI courant";
+    const n = a.name, bk = bankOf(a);
+    if (/debt service/i.test(n)) return (bk || "STB") + " Debt Service";
+    if (/fonds projet/i.test(n)) return (bk ? bk + " " : "") + "fonds projet";
+    if (/courant/i.test(n) && !/^BACI-/i.test(n)) return (bk ? bk + " " : "") + "courant";
     if (/^BACI-/i.test(n)) return n.replace(/^BACI-/i, "BACI ").replace(/CompteCourant/i, "courant");
-    const b = String(a.bank || n).toUpperCase();
-    const map = [["SOCIETE GENERALE", "SG"], ["STANBIC", "STB"], ["ECOBANK", "ECO"], ["BNI", "BNI"], ["BANK OF AFRICA", "BOA"], ["BANQUE ATLANTIQUE", "BACI"], ["SIB", "SIB"]];
-    for (const [k, v] of map) if (b.indexOf(k) === 0 || n.toUpperCase().indexOf(k) === 0) return v;
-    return n;
+    return bk || n;
   };
   CHR.EQ_ENT = { FIRST: "SCI FIRST", RIVIERA: "RIVIERA PARK", "INFI SOFT": "INFI" };
   CHR.equilibrage = function (C, opt) {
