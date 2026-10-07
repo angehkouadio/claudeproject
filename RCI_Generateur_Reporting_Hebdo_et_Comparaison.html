@@ -2555,6 +2555,11 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const path = "xl/worksheets/sheet" + sheetNo + ".xml";
     let xml = await zip.file(path).async("string");
     xml = xml.replace(/(<row [^>]*?)\s+collapsed="(1|true)"/g, "$1");
+    // ordre imposé par Excel dans <sheetPr> : tabColor, outlinePr, pageSetUpPr
+    xml = xml.replace(/<sheetPr>(.*?)<\/sheetPr>/, (m0, inner) => {
+      const get = (t) => { const m = inner.match(new RegExp("<" + t + "[^>]*/>|<" + t + "[^>]*>.*?</" + t + ">")); return m ? m[0] : ""; };
+      return "<sheetPr>" + get("tabColor") + get("outlinePr") + get("pageSetUpPr") + "</sheetPr>";
+    });
     const add = {};
     (ranges || []).forEach(([g0, g1]) => { for (let k = g0; k <= g1; k++) add[k] = '<row r="' + k + '" hidden="1" outlineLevel="1"/>'; });
     rows.forEach((n) => (add[n] = '<row r="' + n + '" collapsed="1"/>'));
@@ -2894,7 +2899,6 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const groups = [[5, 8], [10, SYN_T - 2], [blkT[0] + 1, blkT[1] - 2], [blkT[1] + 1, r]];
     groups.forEach(([g0, g1]) => { for (let k = g0; k <= g1; k++) { const row = ws.getRow(k); row.outlineLevel = 1; row.hidden = true; } });
     ws.properties.outlineLevelRow = 1;
-    ws.properties.outlineProperties = { summaryBelow: true, summaryRight: true };
     rhCollapsed = groups.map((g) => g[1] + 1); rhGroups = groups;
     const widths = { A: 2.5, B: 7, C: 46, D: 30, E: 10, F: 11.5, G: 12.5, H: 12.5, I: 12.5, J: 12.5, K: 12.5, L: 1.5, M: 15.5, X: 2, Y: 47 };
     WEEKP.forEach(([a, b]) => { widths[a] = 15.5; widths[b] = 15.5; });
