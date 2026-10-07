@@ -2497,10 +2497,12 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     set(PO, "A" + r, "TOTAL", { font: { bold: true }, bd: { top: med, bottom: med } });
     set(PO, "F" + r, "=SUM(F5:F" + (r - 1) + ")", { font: { bold: true }, fmt: NUM, bd: { top: med, bottom: med } });
     set(PO, "G" + r, "=SUM(G5:G" + (r - 1) + ")", { font: { bold: true }, fmt: NUM, bd: { top: med, bottom: med } });
+    const posRowX = [];
     if (C.accX && C.accX.length) {
       let rx = r + 3;
       set(PO, "A" + rx, "Comptes indisponibles – exclus de la position (pour information)", { font: { bold: true } }); rx++;
-      C.accX.forEach((a) => {
+      C.accX.forEach((a, k) => {
+        posRowX[k] = rx;
         [a.ent, a.bank || "", a.name, (a.dest || "").trim(), "Indisponible", a.amt, "=F" + rx + "/" + T, "", "CIV position, ligne " + a.r].forEach((v, j) => { const c = set(PO, PO.getCell(rx, j + 1).address, v, { bd: B4, font: { color: { argb: "FF7F7F7F" } } }); if (j === 5 || j === 6) c.numFmt = NUM; });
         rx++;
       });
@@ -2657,6 +2659,22 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const TG = r;
     totalRow(TG, "TOTAL GÉNÉRAL CÔTE D'IVOIRE", (col) => "=" + col + TS + "+" + col + TD);
     r += 2;
+    if (C.accX && C.accX.length) {
+      const GX = "FFC6EFCE";
+      set(ws, "C" + r, "Comptes indisponibles – pour information (hors position et hors totaux)", { font: { bold: true } }); r++;
+      C.accX.forEach((a, k) => {
+        set(ws, "A" + r, a.ent);
+        set(ws, "C" + r, a.name, { font: { bold: true } }); set(ws, "D" + r, (a.dest || "").trim(), { font: { size: 8 } });
+        money("M" + r, "='" + posName + "'!F" + posRowX[k], { font: { bold: true } }); money("F" + r, "=M" + r + "/$E$3");
+        let prev = "M" + r;
+        WEEKP.forEach(([wa, wb], i) => { money(wb + r, "=" + prev); money(EURC[i] + r, "=" + wb + r + "/$E$3"); prev = wb + r; });
+        SOLDE_COLS.forEach((col) => { const c = ws.getCell(col + r); c.border = wkBd(col, thin); c.fill = fill(GX); });
+        ws.getCell("A" + r).font = F({ color: { argb: BLANC } });
+        r++;
+      });
+      set(ws, "C" + r, "Indisponibles : soldes inchangés sur S1 à S5, non mobilisables pour les paiements.", { font: { italic: true, size: 9, color: { argb: "FF6B7280" } } });
+      r += 2;
+    }
     // synthèse
     set(ws, "C" + r, "SYNTHÈSE DES BESOINS PAR SEMAINE", { font: { bold: true } }); r++;
     const SY = r;
