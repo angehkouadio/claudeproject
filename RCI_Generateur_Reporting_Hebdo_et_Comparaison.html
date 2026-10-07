@@ -80,6 +80,7 @@
   td.why { font-size: 12px; color: var(--grey); text-align: left; max-width: 420px; }
   #cmp h3, #step3 h3 { color: var(--navy); margin: 18px 0 8px; font-size: 14px; }
   tr.muted2 td { color: var(--grey); }
+  tr.b1 td { background: var(--bg); }
   .btns { display: flex; gap: 12px; flex-wrap: wrap; }
   .files { grid-template-columns: repeat(3, 1fr) !important; }
   @media (max-width: 860px) { .kpis { grid-template-columns: 1fr 1fr; } }
@@ -135,6 +136,7 @@
   <div id="step3" class="hidden">
     <h2><span class="n">3</span>Reporting de Christophe – contrôle des chiffres</h2>
     <div class="kpis" id="kpis"></div>
+    <h3>Besoin (–) ou surplus (+) de trésorerie par semaine (MFCFA)</h3><div id="tblN"></div>
     <h3>Flux par semaine et soldes théoriques (MFCFA)</h3><div id="tblC"></div>
     <h3>Contrôles</h3><ul class="checks" id="checks"></ul>
   </div>
@@ -2125,6 +2127,11 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     T.tot = sum(T.totWk);
     T.defProj = -sum(P.filter((p) => p.solde < -0.05).map((p) => p.solde));
     T.def = T.defSoc + T.defProj;
+    // besoin (–) ou surplus (+) de trésorerie : soldes théoriques nets, comme la synthèse du reporting
+    const wkSum = (arr) => WK.map((_, i) => sum(arr.map((x) => x.soldes[i] || 0)));
+    T.netSoc = wkSum(E); T.netDed = wkSum(DED);
+    T.netSocDont = ["PICI", "FIRST"].map((e) => ({ e, v: wkSum(E.filter((x) => x.e === e)) }));
+    T.netDedDont = ["RIVIERA", "TERASSON"].map((e) => ({ e, v: wkSum(DED.filter((x) => x.ent === e)) }));
 
     return { sit, W, WK, fon, ded, acc, accX, E, DED, P, T, rents, notes, recapWk: recapWk || [], recapDate: recapDate || [], opt, edit, eqTransfers, standalone: !!b.standalone };
   };
@@ -3184,7 +3191,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       kpi(s, 0.5, 1.35, cw, 0.98, M_(T.tot), "Besoin S1 à S5 (" + fmt(T.tot / CHR.FX, 1) + " M€) : fonctionnement, projets et dette");
       kpi(s, 0.5 + (cw + gx), 1.35, cw, 0.98, M_(T.totWk[0]), "À régler dès S1 (antériorités incluses), " + Math.round((T.totWk[0] / (T.tot || 1)) * 100) + " % du besoin", RED);
       kpi(s, 0.5 + 2 * (cw + gx), 1.35, cw, 0.98, M_(T.cashAll), "Trésorerie au " + U.ddmm(C.sit) + " ; " + M_(T.nonMob - T.tbd) + " bloqués" + (T.tbd > 0.05 ? ", " + M_(T.tbd) + " à arbitrer" : ""));
-      kpi(s, 0.5 + 3 * (cw + gx), 1.35, cw, 0.98, M_(T.def), "Déficits à couvrir : " + nP + " projet(s) et " + T.nDefSoc + " société(s)", RED);
+      const nS = T.netSoc[4], nD = T.netDed[4];
+      kpi(s, 0.5 + 3 * (cw + gx), 1.35, cw, 0.98, sgn(nS) + " M", (nS < -0.05 ? "Besoin" : "Surplus") + " fin S5 – comptes de sociétés ; comptes dédiés " + sgn(nD) + " M", nS < -0.05 ? RED : GREEN);
       const hdr = [hcell("Décaissements", { align: "left" })].concat(W.map((w) => hcell(w.code + " " + U.ddmm(w.d0))), [hcell("Total S1 à S5"), hcell("Comptes payeurs au " + U.ddmm(C.sit)), hcell("Déficit fin S5")]);
       const row = (lab, wk, cash, def) => [LB(lab)].concat(wk.map((v) => cell(fmt(v))), [cell(fmt(sum(wk)), { bold: true, fill: { color: BG } }), cell(fmt(cash)), def > 0.05 ? NEG(fmt(def)) : cell("–")]);
       const rows = [hdr, row("Fonctionnement des sociétés", T.fonctWk, T.cashSoc, T.defSoc)];
@@ -3192,14 +3200,21 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       C.DED.filter((d) => d.debt).forEach((d) => rows.push(row("Dette " + d.ent + " (service de la dette)", T.detteWk, d.cashM, Math.max(0, -d.solde))));
       rows.push([W_("Total des décaissements", { align: "left" })].concat(T.totWk.map((v) => W_(fmt(v))), [W_(fmt(T.tot)), W_(fmt(T.cashSoc + sum(C.P.map((p) => p.cash)) + sum(C.DED.filter((d) => d.debt).map((d) => d.cashM)))), W_(fmt(T.def))]));
       rows.push([L_("Encaissements prévus", { italic: true, color: GREY })].concat(T.encWk.map((v) => cell(fmt(v), { italic: true, color: GREY })), [cell(fmt(sum(T.encWk)), { italic: true, color: GREY }), cell(""), cell("")]));
-      s.addTable(rows, { x: 0.5, y: 2.5, w: 12.33, colW: [3.03, 1.0, 1.0, 0.9, 0.9, 0.9, 1.3, 1.9, 1.4], rowH: 0.3, fontFace: F });
-      const ty = 2.5 + 0.3 * rows.length + 0.25;
+      // besoin (–) ou surplus (+) de trésorerie : soldes théoriques nets par semaine
+      const nv = (v, b) => cell(sgn(v), { bold: !!b, color: v < -0.05 ? RED : v > 0.05 ? GREEN : TXT, fill: b ? { color: BG } : undefined });
+      rows.push([hcell("Besoin (–) ou surplus (+) de trésorerie – soldes théoriques", { align: "left", colspan: 9 })]);
+      const netRow = (lab, v, b) => rows.push([cell((b ? "" : "   dont ") + lab, { align: "left", bold: !!b, italic: !b, fill: b ? { color: BG } : undefined })].concat(v.map((x) => nv(x, b)), [cell("", { fill: b ? { color: BG } : undefined }), cell("", { fill: b ? { color: BG } : undefined }), cell("", { fill: b ? { color: BG } : undefined })]));
+      netRow("Comptes de sociétés", T.netSoc, true); T.netSocDont.forEach((d) => netRow(d.e, d.v));
+      netRow("Comptes dédiés", T.netDed, true); T.netDedDont.forEach((d) => netRow(d.e, d.v));
+      const rh3 = 0.245;
+      rows.forEach((r) => r.forEach((c) => (c.options.fontSize = 9)));
+      s.addTable(rows, { x: 0.5, y: 2.45, w: 12.33, colW: [3.03, 1.0, 1.0, 0.9, 0.9, 0.9, 1.3, 1.9, 1.4], rowH: rh3, fontFace: F });
+      const ty = 2.45 + rh3 * rows.length + 0.12;
       const defs = C.E.filter((e) => e.solde < -0.05).sort((a, b) => a.solde - b.solde), sur = C.E.filter((e) => e.solde > 0.05).sort((a, b) => b.solde - a.solde);
       bullets(s, [
-        ["S1 concentre " + Math.round((T.totWk[0] / (T.tot || 1)) * 100) + " % du besoin : ", "factures échues et arriérés d'impôts et de cotisations de l'audit, semaine en cours, cash plans non réglés jusqu'au mois de la situation, échéance de la dette."],
         C.P.length ? ["Projets : ", M_(T.proj) + ". " + C.P.map((p) => p.ent + (p.solde < -0.05 ? " en déficit de " + M_(-p.solde) + (p.soldes.findIndex((v) => v < -0.05) >= 0 ? " dès " + WK[p.soldes.findIndex((v) => v < -0.05)] : "") : " couvert (" + sgn(p.solde) + " M)")).join(" ; ") + "."] : null,
         ["Fonctionnement : ", (defs.length ? "déficits " + defs.slice(0, 6).map((e) => e.e + " " + M_(-e.solde)).join(", ") : "aucun déficit") + (sur.length ? " ; excédents " + sur.slice(0, 3).map((e) => e.e + " " + M_(e.solde)).join(", ") : "") + "."],
-      ], 0.5, Math.max(4.85, ty), 12.3, 1.7);
+      ], 0.5, ty, 12.3, 6.68 - ty, 10);
       const nm = C.acc.filter((a) => !a.mobil && !/ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5), ar = C.acc.filter((a) => /ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5);
       const ix = (C.accX || []).filter((a) => Math.abs(a.amt) > 0.5);
       const ed0 = C.edit || {}, upd = [];
@@ -3492,10 +3507,16 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   function render() {
     var C = st.C, T = C.T, L = st.L, CMP = st.CMP;
     var paid = C.edit && C.edit.paid ? C.edit.paid.tot / 1e6 : 0;
-    var k = [[fmt(T.tot) + " M", "Besoin S1 à S5 (Christophe)", ""], [fmt(T.totWk[0]) + " M", "dont S1", "red"], [fmt(T.cashAll) + " M", "Trésorerie au " + CHR.util.dmy(C.sit), ""], [fmt(T.defSoc) + " M", "Déficits des sociétés", "red"], [fmt(T.defProj) + " M", "Déficits des projets", "red"],
+    var nk = function (v, lab) { return [fmt(v, 1, true) + " M", (v < -0.05 ? "Besoin" : "Surplus") + " de trésorerie fin S5 – " + lab, v < -0.05 ? "red" : "green"]; };
+    var k = [[fmt(T.tot) + " M", "Besoin S1 à S5 (Christophe)", ""], [fmt(T.totWk[0]) + " M", "dont S1", "red"], [fmt(T.cashAll) + " M", "Trésorerie au " + CHR.util.dmy(C.sit), ""], nk(T.netSoc[4], "comptes de sociétés"), nk(T.netDed[4], "comptes dédiés"),
       [L ? fmt(L.T.tot) + " M" : "–", "Besoin de fonctionnement RCI (Laureen)", ""], [L ? fmt(-L.E.filter(function (e) { return e.pos < 0; }).reduce(function (a, e) { return a + e.pos; }, 0)) + " M" : "–", "Déficits RCI (spot)", "red"]];
     if (paid > 0.05) k.push([fmt(paid) + " M", "Paiements effectués déduits du besoin", "green"]);
     if (!L) k = k.filter(function (x) { return x[1].indexOf("RCI") < 0; });
+    var nr = function (lab, v, cls) { return "<tr" + (cls ? ' class="' + cls + '"' : "") + "><td" + (cls ? "" : ' style="padding-left:22px"') + ">" + (cls ? "<b>" + esc(lab) + "</b>" : esc(lab)) + "</td>" + v.map(function (x) { return "<td>" + sgn(x) + "</td>"; }).join("") + "</tr>"; };
+    var tn = "<table><tr><th style=\"text-align:left\">Soldes théoriques nets</th>" + C.WK.map(function (w) { return "<th>" + w + "</th>"; }).join("") + "</tr>";
+    tn += nr("Comptes de sociétés", T.netSoc, "b1"); T.netSocDont.forEach(function (d) { tn += nr("dont " + d.e, d.v); });
+    tn += nr("Comptes dédiés", T.netDed, "b1"); T.netDedDont.forEach(function (d) { tn += nr("dont " + d.e, d.v); });
+    $("tblN").innerHTML = tn + "</table>";
     $("kpis").innerHTML = k.map(function (x) { return '<div class="kpi ' + x[2] + '"><b>' + x[0] + "</b><span>" + x[1] + "</span></div>"; }).join("");
     var h = "<table><tr><th>Entité</th>" + C.WK.map(function (w) { return "<th>" + w + "</th>"; }).join("") + "<th>Besoin</th><th>Trésorerie</th><th>Solde fin S5</th></tr>";
     C.E.forEach(function (e) { h += "<tr><td><b>" + esc(e.e) + "</b></td>" + e.wk.map(function (v) { return "<td>" + fmt(v) + "</td>"; }).join("") + "<td>" + fmt(e.besoin) + "</td><td>" + fmt(e.cash) + "</td><td>" + sgn(e.solde) + "</td></tr>"; });
