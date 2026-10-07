@@ -156,6 +156,7 @@
       <button class="go" id="goC" disabled>Présentation (Christophe)</button>
       <button class="go" id="goL" disabled>Présentation RCI (Laureen)</button>
     </div>
+    <span id="hintC" class="msg muted">La présentation de Christophe se génère à partir du reporting modifié : chargez-le pour l'activer.</span>
     <span id="status" class="msg"></span>
   </div>
 </main>
@@ -3675,8 +3676,12 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     var full = !!(st.audit && st.pos), ready = full || !!st.editWb;
     ["step2", "step3"].forEach(function (id) { $(id).classList.toggle("hidden", !ready); });
     $("step4").classList.toggle("hidden", !full);
-    ["goX", "goC"].forEach(function (id) { $(id).disabled = !ready; });
-    $("goL").disabled = !full;
+    // présentation de Christophe : uniquement à partir du reporting modifié ;
+    // reporting modifié seul : seule la présentation de Christophe est proposée
+    var edit = !!st.editWb;
+    $("goX").disabled = !full; $("goL").disabled = !full; $("goC").disabled = !edit;
+    $("goX").classList.toggle("hidden", edit && !full); $("goL").classList.toggle("hidden", edit && !full);
+    $("hintC").textContent = edit ? "" : "La présentation de Christophe se génère à partir du reporting modifié : chargez-le pour l'activer.";
     if (!ready) return;
     if (changed) initOptions();
     recompute();
