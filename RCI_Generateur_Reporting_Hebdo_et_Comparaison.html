@@ -123,7 +123,6 @@
         <label for="o-projWeek">Projets : semaine des paiements du mois suivant non situés dans PICI Projets</label>
         <select id="o-projWeek"><option>S1</option><option selected>S2</option><option>S3</option><option>S4</option></select>
         <div class="ents" style="margin-top:10px"><label><input type="checkbox" id="o-anteRCI" checked> Présentation RCI : reporter sur le premier mois (S1) les montants des cash plans encore non réglés des mois antérieurs</label></div>
-        <div class="ents" style="margin-top:10px"><label><input type="checkbox" id="o-payDeduct" checked> Paiements exécutés : déduire le montant du solde du compte débité (paiements postérieurs à la date de situation)</label></div>
         <div class="ents" style="margin-top:10px"><label><input type="checkbox" id="o-scoPrior" checked> SCO AO : reprendre en S1 les flux des semaines antérieures à la situation</label></div>
       </div>
       <div class="card">
@@ -2107,7 +2106,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     }
     const edit = src.edit ? CHR.applyEdits(fon, ded, src.edit, WK, FX, acc, accX) : null;
     if (edit) edit.notes.forEach((n) => notes.push(n));
-    const pays = src.pays && src.pays.length ? CHR.applyPayments(src.pays, { fon, ded, acc: acc.concat(accX), WK, sit, pici: src.pici || [], map: opt.payMap || {}, deduct: opt.payDeduct !== false, skip: src.edit ? src.edit.execIds || [] : [] }) : null;
+    const pays = src.pays && src.pays.length ? CHR.applyPayments(src.pays, { fon, ded, acc: acc.concat(accX), WK, sit, pici: src.pici || [], map: opt.payMap || {}, deduct: false, skip: src.edit ? src.edit.execIds || [] : [] }) : null;
     if (pays) pays.notes.forEach((n) => notes.push(n));
     if (pays && edit) edit.pays = pays;
     return CHR.summarize({ sit, W, WK, fon, ded, acc, accX, projInfo, rents, notes, recapWk, recapDate, opt, edit, pays, eqTransfers: src.edit && src.edit.hasEq ? src.edit.transfers : undefined });
@@ -2373,11 +2372,10 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         if (cn.indexOf("synthese") === 0) break;
         if (/comptes dedies/.test(cn) && /soldes bancaires/.test(cn)) { sec = "DED"; continue; }
         if (/^comptes indisponibles/.test(cn)) { sec = "IND"; continue; }
-        if (!c || cn.indexOf("total") === 0 || cn.indexOf("indisponibles :") === 0 || m == null) continue;
-        if (sec === "SOC") {
-          if (/^\s/.test(cRaw)) pos.push({ ent: cur, bank: "", name: c, dest: d, amt: m, src: null, r: null });
-          else if (a) cur = a;
-        } else if (sec === "DED") pos.push({ ent: a.split("-")[0].trim(), bank: "", name: c, dest: d, amt: m, src: null, r: null });
+        if (!c || cn.indexOf("total") === 0 || cn.indexOf("indisponibles :") === 0) continue;
+        if (sec === "SOC" && !/^\s/.test(cRaw)) { if (a) cur = a; continue; }   // ligne d'entité (somme, parfois sans valeur calculée)
+        if (m == null) continue;
+        if (sec === "SOC") pos.push({ ent: cur, bank: "", name: c, dest: d, amt: m, src: null, r: null }); else if (sec === "DED") pos.push({ ent: a.split("-")[0].trim(), bank: "", name: c, dest: d, amt: m, src: null, r: null });
         else pos.push({ ent: a, bank: "", name: c, dest: d, amt: m, src: null, r: null });
       }
     }
@@ -2407,6 +2405,17 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const M = (v) => (Math.round(v / 1e5) / 10).toFixed(1).replace(".", ",");
     if (ch.length) notes.push("Soldes mis à jour : " + ch.map((c) => c.name + " " + M(c.from) + " → " + M(c.to) + " M").join(", ") + ".");
     return ch;
+  };
+  // anciens reportings : paiements exécutés déduits des soldes → montant rajouté (les paiements n'affectent que les prévisions)
+  CHR.restoreDeducted = function (accs, execRows, notes) {
+    let n = 0, t = 0;
+    (execRows || []).forEach((r) => {
+      if (String(r[11] || "").toUpperCase() !== "O") return;
+      const a = accs.find((x) => x.name === String(r[2] || "").trim()), v = typeof r[6] === "number" ? r[6] : 0;
+      if (a && v) { a.amt += v; n++; t += v; }
+      r[11] = "N";
+    });
+    if (n) notes.push("Soldes : " + n + " paiement(s) exécuté(s) précédemment déduit(s) des soldes rajouté(s) (" + (Math.round(t / 1e5) / 10).toFixed(1).replace(".", ",") + " M) – les paiements n'affectent que les prévisions.");
   };
   CHR.paidNote = function (fon, ded, notes) {
     const L = fon.concat(ded).filter((x) => x.paid > 0.5 && x.ret === "O");
@@ -2455,6 +2464,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     if (removed.length) notes.push("Reporting modifié : " + removed.length + " ligne(s) des sources absente(s) du fichier, passée(s) en Retenu = N.");
     const paid = CHR.paidNote(fon, ded, notes);
     const balances = ed.pos && ed.pos.length ? CHR.applyBalances((acc || []).concat(accX || []), ed.pos, notes) : [];
+    CHR.restoreDeducted((acc || []).concat(accX || []), ed.execRows, notes);
     return { moved, changed, added, removed, notes, transfers: ed.transfers, hasEq: ed.hasEq, paid, balances, execIds: ed.execIds || [], execRows: ed.execRows || [] };
   };
 })();
@@ -2475,6 +2485,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const acc = accAll.filter((a) => !a.indispo), accX = accAll.filter((a) => a.indispo);
     const notes = [];
     const balances = CHR.applyBalances(accAll, ed.pos, notes);
+    CHR.restoreDeducted(accAll, ed.execRows, notes);
     let fon = ed.fon.map((x) => Object.assign({}, x));
     if (opt.sco && opt.sco.length) {
       const n0 = fon.filter((x) => CHR.canon(x.ent) === "SCO AO").length;
@@ -2484,7 +2495,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const ded = ed.ded.map((x) => Object.assign({}, x, { fcfa: x.fcfa != null ? x.fcfa : x.eur * FX }));
     fon.concat(ded).forEach((x) => { const p = x.paid, d = x.pdate; delete x.paid; delete x.pdate; CHR.payApply(x, p, d); });
     const paid = CHR.paidNote(fon, ded, notes);
-    const pays = opt.pays && opt.pays.length ? CHR.applyPayments(opt.pays, { fon, ded, acc: accAll, WK, sit, pici: [], map: opt.payMap || {}, deduct: opt.payDeduct !== false, skip: ed.execIds || [] }) : null;
+    const pays = opt.pays && opt.pays.length ? CHR.applyPayments(opt.pays, { fon, ded, acc: accAll, WK, sit, pici: [], map: opt.payMap || {}, deduct: false, skip: ed.execIds || [] }) : null;
     if (pays) pays.notes.forEach((n) => notes.push(n));
     const projInfo = {};
     ded.filter((x) => /-PROJET$/.test(x.key)).forEach((x) => {
@@ -2579,8 +2590,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     });
     const act = list.filter((x) => !x.skipped);
     const imp = act.reduce((s, x) => s + x.alloc.filter((a) => !a.info).reduce((t, a) => t + a.amt, 0), 0);
-    if (act.length) notes.push("Paiements exécutés : " + act.length + " paiement(s), " + M(act.reduce((s, x) => s + x.amt, 0)) + " M ; " + M(imp) + " M imputés sur le besoin S1 à S5" + (act.some((x) => x.deducted) ? ", déduits du solde des comptes débités" : "") + ".");
-    act.filter((x) => !x.choice).forEach((x) => notes.push("Paiement non imputé (à affecter) : " + x.ben + " " + M(x.amt) + " M (" + (x.ent || "entité inconnue") + ") – solde diminué, besoin inchangé."));
+    if (act.length) notes.push("Paiements exécutés : " + act.length + " paiement(s), " + M(act.reduce((s, x) => s + x.amt, 0)) + " M ; " + M(imp) + " M imputés sur les prévisions S1 à S5 (soldes bancaires inchangés).");
+    act.filter((x) => !x.choice).forEach((x) => notes.push("Paiement non imputé (à affecter) : " + x.ben + " " + M(x.amt) + " M (" + (x.ent || "entité inconnue") + ") – prévisions inchangées."));
     act.filter((x) => x.choice && x.left > 0.5).forEach((x) => notes.push("Paiement " + x.ben + " : " + M(x.left) + " M au-delà du besoin restant de « " + x.choice + " »."));
     act.filter((x) => !x.account).forEach((x) => notes.push("Compte débité introuvable dans la position : « " + x.bank + " »."));
     if (o.skip.length && list.some((x) => x.skipped)) notes.push(list.filter((x) => x.skipped).length + " paiement(s) déjà intégrés dans le reporting importé : ignorés.");
@@ -3101,7 +3112,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     set(c, "A" + k, "1. Soldes bancaires au " + U.dmy(C.sit) + " (FCFA)", { font: { bold: true } }); k++;
     th(["Contrôle", "Reporting", "Position CI (origine)", "Écart", "Commentaire"]);
     const sumA = (f) => Math.round(C.acc.reduce((t, a) => t + f(a), 0));
-    line(["Total comptes de sociétés + comptes dédiés", sumA((a) => a.amt), sumA((a) => (a.amtSrc != null ? a.amtSrc : a.amt)), "=B" + k + "-C" + k, "Comptes indisponibles exclus. Écart = soldes mis à jour et paiements exécutés déduits depuis la position."], [null, NUM, NUM, NUM]);
+    line(["Total comptes de sociétés + comptes dédiés", sumA((a) => a.amt), sumA((a) => (a.amtSrc != null ? a.amtSrc : a.amt)), "=B" + k + "-C" + k, "Comptes indisponibles exclus. Écart = soldes mis à jour à la main depuis la position."], [null, NUM, NUM, NUM]);
     k++;
     set(c, "A" + k, "2. Fonctionnement : reporting vs RECAP de l'audit (S1 à S4 de l'audit, M FCFA)", { font: { bold: true } }); k++;
     th(["Entité", "Reporting (fournisseurs, impôts, cotisations, salaires, prêts)", "RECAP de l'audit", "Écart", "Commentaire"]);
@@ -3128,7 +3139,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
 
     // ================= Paiements exécutés =================
     set(PX, "A1", "Paiements exécutés depuis la position – diminution des besoins", { font: { bold: true, size: 14 } });
-    set(PX, "A2", "Montant imputé : déduit du reste à payer des lignes indiquées (feuilles de détail, colonnes « Payé »). Déduit du solde = O : montant retiré du solde du compte débité dans le reporting.", { font: { italic: true, color: { argb: "FF6B7280" } } });
+    set(PX, "A2", "Montant imputé : déduit du reste à payer des lignes indiquées (feuilles de détail, colonnes « Payé »). Les paiements exécutés diminuent uniquement les prévisions : les soldes bancaires ne sont pas modifiés.", { font: { italic: true, color: { argb: "FF6B7280" } } });
     head(PX, 4, ["Réf.", "Date", "Compte débité", "Bénéficiaire", "Projet", "Entité", "Montant payé FCFA", "Imputé sur", "Répartition", "Imputé S1 à S5 FCFA", "Non imputé / hors horizon FCFA", "Déduit du solde"]);
     let pr = 5;
     const fmtA = (r0) => r0.alloc.map((a) => a.wk + " " + (Math.round(a.amt / 1e5) / 10).toFixed(1).replace(".", ",") + " M").join(" ; ");
@@ -3169,7 +3180,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Loyers", "Encaissement en " + (C.rents ? C.rents.week : "S2") + " (date non précisée dans l'état des loyers)."],
       ["Droits d'enregistrement", "Hors besoin, comme la présentation RCI (lignes conservées avec Retenu = N)."],
       ["Mises à jour", "Soldes : colonne « Solde réel » en FCFA de « Reporting Hebdo » (cellules en jaune, modifiables ; nouveau compte : l'ajouter dans la position CI source). Paiements effectués : montant payé et date dans les feuilles de détail (colonnes en jaune) ; seul le reste à payer alimente le reporting. Paiements non prévus : nouvelles lignes dans les feuilles de détail. Le fichier modifié se réimporte dans le générateur HTML pour refaire la présentation."],
-      ["Paiements exécutés", meta.files.pays ? meta.files.pays + " – chaque paiement est imputé sur les lignes de besoin du bénéficiaire (nom, sinon nature de l'audit PICI Projets), des plus anciennes aux plus récentes ; montant retiré du solde du compte débité s'il est postérieur à la position. Détail dans la feuille « Paiements exécutés » du fichier de contrôle." : "Aucun fichier de paiements exécutés chargé."],
+      ["Paiements exécutés", meta.files.pays ? meta.files.pays + " – chaque paiement est imputé sur les lignes de besoin du bénéficiaire (nom, sinon nature de l'audit PICI Projets), des plus anciennes aux plus récentes ; ils diminuent les prévisions, pas les soldes bancaires. Détail dans la feuille « Paiements exécutés » du fichier de contrôle." : "Aucun fichier de paiements exécutés chargé."],
       ["Comptes indisponibles", (C.accX || []).map((a) => a.name).join(", ") + " : exclus de la position et du reporting (listés pour information en bas des soldes de « Reporting Hebdo »)."],
       ["Dette FIRST", "Échéances des prêts FIRST et loyers à encaisser traités en fonctionnement de FIRST (pas de compte dédié)."],
       ["Prêts des projets", "TERASSON et RIVIERA : frais financiers déjà dans les cash plans, non ajoutés."],
@@ -3737,11 +3748,11 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       sm.value = st.rents.months.some(function (m) { return m.key === cur; }) ? cur : def.key;
     } else sm.innerHTML = "<option value=''>–</option>";
     sm.disabled = $("o-rentWeek").disabled = !st.rents;
-    ["o-payDeduct", "o-sit", "o-tbd", "o-rentMonth", "o-rentWeek", "o-projWeek", "o-scoPrior", "o-anteRCI"].forEach(function (id) { $(id).onchange = function () { if (id === "o-rentMonth") st.paid = {}; recompute(); }; });
+    ["o-sit", "o-tbd", "o-rentMonth", "o-rentWeek", "o-projWeek", "o-scoPrior", "o-anteRCI"].forEach(function (id) { $(id).onchange = function () { if (id === "o-rentMonth") st.paid = {}; recompute(); }; });
   }
   function opts() {
     var sd = $("o-sit").value ? new Date($("o-sit").value + "T00:00:00Z") : null;
-    return { payMap: st.payMap, payDeduct: $("o-payDeduct").checked, sitDate: sd, countTbd: $("o-tbd").checked, countTbdRCI: $("o-tbd").checked, rentMonth: $("o-rentMonth").value, rentWeek: $("o-rentWeek").value, projDefaultWeek: $("o-projWeek").value, scoPrior: $("o-scoPrior").checked, paid: st.paid, rentEnt: "FIRST", loanProjEnts: ["TERASSON", "RIVIERA"] };
+    return { payMap: st.payMap, payDeduct: false, sitDate: sd, countTbd: $("o-tbd").checked, countTbdRCI: $("o-tbd").checked, rentMonth: $("o-rentMonth").value, rentWeek: $("o-rentWeek").value, projDefaultWeek: $("o-projWeek").value, scoPrior: $("o-scoPrior").checked, paid: st.paid, rentEnt: "FIRST", loanProjEnts: ["TERASSON", "RIVIERA"] };
   }
   function recompute() {
     try {
@@ -3776,11 +3787,11 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   function renderPays(C) {
     var el = $("payTable");
     if (!C.pays || !C.pays.list.length) { el.innerHTML = '<span class="muted">Aucun fichier de paiements exécutés chargé.</span>'; return; }
-    var h = "<table><tr><th>Date</th><th>Compte débité</th><th>Bénéficiaire</th><th>Entité</th><th>Montant (M)</th><th style=\"text-align:left\">Imputé sur</th><th>Répartition</th><th>Solde</th></tr>";
+    var h = "<table><tr><th>Date</th><th>Compte débité</th><th>Bénéficiaire</th><th>Entité</th><th>Montant (M)</th><th style=\"text-align:left\">Imputé sur</th><th>Répartition</th></tr>";
     C.pays.list.forEach(function (x) {
-      if (x.skipped) { h += '<tr class="muted2"><td>' + (x.date ? CHR.util.dmy(x.date) : "") + "</td><td>" + esc(x.bank) + "</td><td>" + esc(x.ben) + "</td><td>" + esc(x.ent || "") + "</td><td>" + fmt(x.amt / 1e6) + '</td><td colspan="3">déjà intégré dans le reporting importé</td></tr>'; return; }
+      if (x.skipped) { h += '<tr class="muted2"><td>' + (x.date ? CHR.util.dmy(x.date) : "") + "</td><td>" + esc(x.bank) + "</td><td>" + esc(x.ben) + "</td><td>" + esc(x.ent || "") + "</td><td>" + fmt(x.amt / 1e6) + '</td><td colspan="2">déjà intégré dans le reporting importé</td></tr>'; return; }
       var opts = '<option value="">' + (x.auto ? "Auto : " + esc(x.auto.key) : "Auto : aucune ligne trouvée") + "</option>" + (x.options || []).map(function (k) { return '<option value="' + esc(k) + '"' + (st.payMap[x.id] === k ? " selected" : "") + ">" + esc(k) + "</option>"; }).join("") + '<option value="HORS"' + (st.payMap[x.id] === "HORS" ? " selected" : "") + ">Hors besoin (non prévu)</option>";
-      h += "<tr><td>" + (x.date ? CHR.util.dmy(x.date) : "") + "</td><td>" + esc(x.account || x.bank) + "</td><td><b>" + esc(x.ben) + "</b></td><td>" + esc(x.ent || "?") + "</td><td>" + fmt(x.amt / 1e6) + '</td><td style="text-align:left"><select data-id="' + esc(x.id) + '">' + opts + "</select>" + (x.auto && !st.payMap[x.id] ? '<div class="muted" style="font-size:11px">' + esc(x.auto.how) + "</div>" : "") + (!x.choice ? '<div class="neg" style="font-size:11px">à affecter</div>' : "") + "</td><td>" + esc(x.alloc.map(function (a) { return a.wk + " " + fmt(a.amt / 1e6); }).join(" ; ")) + (x.left > 0.5 && x.choice ? ' <span class="neg">reste ' + fmt(x.left / 1e6) + "</span>" : "") + "</td><td>" + (x.deducted ? "déduit" : "–") + "</td></tr>";
+      h += "<tr><td>" + (x.date ? CHR.util.dmy(x.date) : "") + "</td><td>" + esc(x.account || x.bank) + "</td><td><b>" + esc(x.ben) + "</b></td><td>" + esc(x.ent || "?") + "</td><td>" + fmt(x.amt / 1e6) + '</td><td style="text-align:left"><select data-id="' + esc(x.id) + '">' + opts + "</select>" + (x.auto && !st.payMap[x.id] ? '<div class="muted" style="font-size:11px">' + esc(x.auto.how) + "</div>" : "") + (!x.choice ? '<div class="neg" style="font-size:11px">à affecter</div>' : "") + "</td><td>" + esc(x.alloc.map(function (a) { return a.wk + " " + fmt(a.amt / 1e6); }).join(" ; ")) + (x.left > 0.5 && x.choice ? ' <span class="neg">reste ' + fmt(x.left / 1e6) + "</span>" : "") + "</td></tr>";
     });
     el.innerHTML = h + "</table>";
     Array.prototype.forEach.call(el.querySelectorAll("select"), function (s) { s.onchange = function () { var id = s.getAttribute("data-id"); if (s.value) st.payMap[id] = s.value; else delete st.payMap[id]; recompute(); }; });
