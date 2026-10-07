@@ -2548,7 +2548,29 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   const fill = (argb) => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
   const B4 = { top: thin, left: thin, bottom: thin, right: thin };
 
+  // marque « replié » (collapsed) les lignes de synthèse sous chaque groupe, comme Excel
+  async function markCollapsed(buf, sheetNo, rows, ranges) {
+    if (typeof JSZip === "undefined" || !rows.length) return buf;
+    const zip = await JSZip.loadAsync(buf);
+    const path = "xl/worksheets/sheet" + sheetNo + ".xml";
+    let xml = await zip.file(path).async("string");
+    xml = xml.replace(/(<row [^>]*?)\s+collapsed="(1|true)"/g, "$1");
+    const add = {};
+    (ranges || []).forEach(([g0, g1]) => { for (let k = g0; k <= g1; k++) add[k] = '<row r="' + k + '" hidden="1" outlineLevel="1"/>'; });
+    rows.forEach((n) => (add[n] = '<row r="' + n + '" collapsed="1"/>'));
+    const have = {};
+    xml = xml.replace(/<row r="(\d+)"([^>]*?)(\/?)>/g, (m0, n, attrs, sl) => { have[n] = 1; return rows.indexOf(+n) >= 0 ? '<row r="' + n + '"' + attrs + ' collapsed="1"' + sl + ">" : m0; });
+    const missing = Object.keys(add).filter((n) => !have[n]).map(Number).sort((x, y) => x - y);
+    missing.forEach((n) => {
+      const rr = /<row r="(\d+)"/g; let m, at = -1;
+      while ((m = rr.exec(xml))) { if (+m[1] > n) { at = m.index; break; } }
+      xml = at >= 0 ? xml.slice(0, at) + add[n] + xml.slice(at) : xml.replace("</sheetData>", add[n] + "</sheetData>");
+    });
+    zip.file(path, xml);
+    return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  }
   CHR.buildExcel = async function (C, L, CMP, meta) {
+    let rhCollapsed = [], rhGroups = [];
     const wb = new ExcelJS.Workbook();
     wb.creator = "Direction Trésorerie & Financement";
     wb.calcProperties.fullCalcOnLoad = true;
@@ -2684,8 +2706,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       WEEKP.forEach(([a, b]) => { if (col === a) st.bd = { left: med, right: thin, top: rr === 9 ? med : thin, bottom: thin }; if (col === b) st.bd = { left: thin, right: med, top: rr === 9 ? med : thin, bottom: thin }; });
       return st;
     };
-    set(ws, "C9", "BANQUE", hdrSt("C", 9)); set(ws, "D9", "Destination (position CI)", hdrSt("D", 9));
-    set(ws, "C10", "", hdrSt("C", 10)); set(ws, "D10", "", hdrSt("D", 10));
+    set(ws, "C9", "", hdrSt("C", 9)); set(ws, "D9", "", hdrSt("D", 9));
+    set(ws, "C10", "BANQUE", hdrSt("C", 10)); set(ws, "D10", "Destination (position CI)", hdrSt("D", 10));
     set(ws, "F9", "=$E$2", Object.assign(hdrSt("F", 9), { fmt: "[$-40C]d\\-mmm;@" }));
     set(ws, "M9", "=$E$2", Object.assign(hdrSt("M", 9), { fmt: "[$-40C]d\\-mmm;@" }));
     EURC.forEach((c, i) => set(ws, c + "9", "=" + WEEKP[i][0] + "4", Object.assign(hdrSt(c, 9), { fmt: "[$-40C]d\\-mmm;@" })));
@@ -2779,6 +2801,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       r += 2;
     }
     // synthèse
+    const SYN_T = r;
     set(ws, "C" + r, "SYNTHÈSE DES BESOINS PAR SEMAINE", { font: { bold: true } }); r++;
     const SY = r;
     const synRows = [["Flux de fonctionnement (frais de structure)", "flux", (w) => sf(w)], ["Flux projets et dettes (comptes dédiés)", "flux", (w) => sp(w)],
@@ -2801,6 +2824,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         money(EURC[i] + r, "=" + col + r + "/$E$3", { font: { bold, italic: sub } });
       });
       SOLDE_COLS.slice(2).forEach((col) => (ws.getCell(col + r).border = wkBd(col, thin, thin)));
+      if (kind.indexOf("net") === 0) ["C", "D", "F"].concat(EURC, ["M"], [].concat.apply([], WEEKP)).forEach((col) => (ws.getCell(col + r).fill = fill("FFEEDCCA")));
       if (kind.indexOf("net") === 0 || sub) {
         const cols = WEEKP.map(([, b]) => b).concat(EURC);
         cols.forEach((col) => ws.addConditionalFormatting({ ref: col + r, rules: [
@@ -2813,7 +2837,9 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     // prévisions détaillées
     set(ws, "C" + r, "Prévisions de décaissements et encaissements", { font: { bold: true } }); r++;
     const WLAB = W.map((w, i) => w.code + " : semaine du " + U.ddmm(w.d0) + " au " + U.ddmm(w.d1) + (i === 0 ? " (y compris antériorités)" : ""));
+    const blkT = [];
     const detBlock = (title, combos, fn) => {
+      blkT.push(r);
       set(ws, "A" + r, title, { font: { bold: true }, fill: BLEU });
       ["B", "C", "D"].forEach((col) => (ws.getCell(col + r).fill = fill(BLEU)));
       r++;
@@ -2864,6 +2890,12 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         r++;
       });
     });
+    // groupes repliés (+/–) : soldes par compte et détail des prévisions, synthèse visible
+    const groups = [[5, 8], [10, SYN_T - 2], [blkT[0] + 1, blkT[1] - 2], [blkT[1] + 1, r]];
+    groups.forEach(([g0, g1]) => { for (let k = g0; k <= g1; k++) { const row = ws.getRow(k); row.outlineLevel = 1; row.hidden = true; } });
+    ws.properties.outlineLevelRow = 1;
+    ws.properties.outlineProperties = { summaryBelow: true, summaryRight: true };
+    rhCollapsed = groups.map((g) => g[1] + 1); rhGroups = groups;
     const widths = { A: 2.5, B: 7, C: 46, D: 30, E: 10, F: 11.5, G: 12.5, H: 12.5, I: 12.5, J: 12.5, K: 12.5, L: 1.5, M: 15.5, X: 2, Y: 47 };
     WEEKP.forEach(([a, b]) => { widths[a] = 15.5; widths[b] = 15.5; });
     Object.keys(widths).forEach((k) => (ws.getColumn(k).width = widths[k]));
@@ -2943,7 +2975,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       mr++;
     });
     ME.getColumn(1).width = 30; ME.getColumn(2).width = 140;
-    return wb.xlsx.writeBuffer();
+    const buf = await wb.xlsx.writeBuffer();
+    return markCollapsed(buf, 1, rhCollapsed, rhGroups);
   };
 
   function buildEquilibrage(ws, C, h) {
