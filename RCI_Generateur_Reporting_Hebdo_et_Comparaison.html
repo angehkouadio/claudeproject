@@ -105,7 +105,8 @@
     <div class="file" id="f-pos"><div class="need">Obligatoire</div><h3>Position de trésorerie CI</h3><div class="st">En attente… (feuille CIV position)</div></div>
     <div class="file" id="f-bil"><div class="need">Projets</div><h3>Bilans financiers (cash plans)</h3><div class="st">En attente… (RIVIERA et Village Notre Père, feuille « Marchés et Dépenses HT »)</div></div>
     <div class="file" id="f-rents"><div class="need">Facultatif</div><h3>État des loyers FIRST</h3><div class="st">En attente… (sans ce fichier, aucun loyer)</div></div>
-    <div class="file" id="f-chris"><div class="need">Facultatif – SCO AO</div><h3>Reporting de Christophe</h3><div class="st">En attente… (feuille « Reporting Hebdo » : seuls les flux SCO AO sont repris)</div></div>
+    <div class="file" id="f-sco"><div class="need">SCO AO – prioritaire</div><h3>Prévision de trésorerie SCO</h3><div class="st">En attente… (colonnes « du jj/mm au jj/mm » : encaissements clients, frais généraux, projets)</div></div>
+    <div class="file" id="f-chris"><div class="need">Facultatif – SCO AO</div><h3>Reporting de Christophe</h3><div class="st">En attente… (feuille « Reporting Hebdo » : flux SCO AO repris si la prévision SCO n'est pas chargée)</div></div>
     <div class="file" id="f-pays"><div class="need">Facultatif – mise à jour</div><h3>Paiements exécutés</h3><div class="st">En attente… (banque, bénéficiaire, date, débit, projet / besoin : diminuent les besoins et le solde du compte débité)</div></div>
     <div class="file" id="f-edit"><div class="need">Facultatif – mise à jour</div><h3>Reporting modifié</h3><div class="st">En attente… (reporting généré puis modifié : soldes, paiements effectués, paiements non prévus, semaines, Retenu et virements. Seul, il suffit pour refaire le reporting et la présentation de Christophe)</div></div>
   </div>
@@ -1893,6 +1894,40 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     }
     return out;
   };
+  // ---------- prévision de trésorerie SCO AO (fichier « Mouvement TRESO PREVISION ») ----------
+  CHR.parseScoTreso = function (wb, sit) {
+    const reW = /du\s*(\d{1,2})\/(\d{1,2})\s*au/i;
+    let ws = null, name = "";
+    wb.SheetNames.forEach((n) => { if (ws) return; const s = wb.Sheets[n], { maxR, maxC } = dims(s); for (let r = 1; r <= Math.min(maxR, 30) && !ws; r++) { let k = 0; for (let c = 1; c <= maxC; c++) if (reW.test(str(cv(s, r, c)))) k++; if (k >= 3) { ws = s; name = n; } } });
+    if (!ws) return null;
+    const { maxR, maxC } = dims(ws);
+    const out = [];
+    let cols = null, block = null;
+    for (let r = 1; r <= maxR; r++) {
+      const wcs = [];
+      for (let c = 1; c <= maxC; c++) { const m = reW.exec(str(cv(ws, r, c))); if (m) { const d0 = dateNear(+m[1], +m[2], sit || new Date()); wcs.push({ c, d0, d1: addD(d0, 6), label: str(cv(ws, r, c)) }); } }
+      if (wcs.length >= 3) {
+        cols = wcs;
+        const hb = norm(str(cv(ws, r, 2))), hc = norm(str(cv(ws, r, 3)));
+        block = /client/.test(hb) ? "ENC" : /projet/.test(hc) ? "PROJ" : "FG";
+        continue;
+      }
+      if (!cols) continue;
+      const b = str(cv(ws, r, 2)), c3 = str(cv(ws, r, 3));
+      if (!b || !c3) continue;                       // lignes de total (sans objet / projet)
+      const com = str(cv(ws, r, cols[cols.length - 1].c + 1));
+      const u = norm(b + " " + c3);
+      const nat = block === "ENC" ? "ENCAISSEMENTS" : block === "PROJ" ? "FOURNISSEURS - PROJET"
+        : /cnps|cmu|cotis/.test(u) ? "CHARGES SOCIALES" : /salaire|personnel/.test(u) ? "SALAIRES" : /impot|dgi|tva/.test(u) ? "IMPÔTS ET TAXES" : "FOURNISSEURS - FGX";
+      cols.forEach((w) => {
+        const v = num(cv(ws, r, w.c));
+        if (v == null || Math.abs(v) < 0.5) return;
+        out.push({ r, block, nat, lib: b + " – " + c3, com, amt: block === "ENC" ? Math.abs(v) : -Math.abs(v), d0: w.d0, label: w.label });
+      });
+    }
+    out.sheet = name;
+    return out;
+  };
   const tnat = (n) => {
     const u = norm(n);
     if (/fgx/.test(u)) return "FOURNISSEURS - FGX";
@@ -2004,8 +2039,10 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       rents = { month: month.label, total: sum(due.filter((x) => !x.paid).map((x) => x.amt)) / M, due, ent: rentEnt, week: wk };
     }
 
-    // SCO AO (reporting de Christophe)
-    if (src.chris && src.chris.length) {
+    // SCO AO : prévision de trésorerie SCO en priorité, sinon reporting de Christophe
+    if (src.sco && src.sco.length) {
+      src.sco.forEach((x) => addF({ wk: weekOf(x.d0, W), ent: "SCO AO", nat: x.nat, lib: x.lib + (x.com ? " (" + x.com + ")" : ""), fcfa: x.amt, ret: "O", src: "Prévision trésorerie SCO, " + x.label }));
+    } else if (src.chris && src.chris.length) {
       const seen = {};
       src.chris.forEach((x) => {
         const key = x.wk.label + "|" + Math.round(x.amt);
@@ -2060,6 +2097,12 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       B.months.forEach((mo, i) => { const s = sum(B.lines.map((l) => l.v[i] || 0)); const t = B.total[i] || 0; if (Math.abs(s - t) > 1 && mo.y * 12 + mo.m >= sitM - 12 && mo.y * 12 + mo.m <= sitM + 3) notes.push(ent + " – " + MOIS_FR[mo.m] + " " + mo.y + " : somme des lignes (" + Math.round(s) + " €) ≠ ligne TOTAL (" + Math.round(t) + " €)."); });
     });
     ded.forEach((x) => { if (x.eur != null) x.fcfa = x.eur * FX; });
+    // prévision SCO prioritaire : les lignes SCO AO d'un reporting modifié sont remplacées
+    if (src.edit && src.sco && src.sco.length) {
+      const n0 = src.edit.fon.length;
+      src = Object.assign({}, src, { edit: Object.assign({}, src.edit, { fon: src.edit.fon.filter((x) => canon(x.ent) !== "SCO AO"), keep: ["SCO AO"] }) });
+      if (n0 > src.edit.fon.length) notes.push("SCO AO : " + (n0 - src.edit.fon.length) + " ligne(s) du reporting modifié remplacées par la prévision de trésorerie SCO.");
+    }
     const edit = src.edit ? CHR.applyEdits(fon, ded, src.edit, WK, FX, acc, accX) : null;
     if (edit) edit.notes.forEach((n) => notes.push(n));
     const pays = src.pays && src.pays.length ? CHR.applyPayments(src.pays, { fon, ded, acc: acc.concat(accX), WK, sit, pici: src.pici || [], map: opt.payMap || {}, deduct: opt.payDeduct !== false, skip: src.edit ? src.edit.execIds || [] : [] }) : null;
@@ -2372,7 +2415,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         if (WK.indexOf(e.wk) >= 0 && e.wk !== x.wk) { moved.push({ ent: x.ent, nat: x.nat, lib: x.lib, fcfa: x.fcfa, from: x.wk, to: e.wk }); x.wk = e.wk; }
         if (e.ret !== x.ret) { changed.push({ ent: x.ent, lib: x.lib, fcfa: x.fcfa, ret: e.ret }); x.ret = e.ret; }
       });
-      list.forEach((x, i) => { if (!used[i] && x.ret === "O" && WK.indexOf(x.wk) >= 0) { x.ret = "N"; x.lib += " (retirée du reporting modifié)"; removed.push(x); } });
+      list.forEach((x, i) => { if (!used[i] && x.ret === "O" && WK.indexOf(x.wk) >= 0 && (ed.keep || []).indexOf(x.ent) < 0) { x.ret = "N"; x.lib += " (retirée du reporting modifié)"; removed.push(x); } });
     };
     sync(fon, ed.fon, (x) => [kF(x)], (e) => [kF(e)], (e) => Object.assign({ src: "Reporting modifié" }, e));
     sync(ded, ed.ded, (x) => (x.eur != null ? [kD(x, true)] : [kD(x, false)]), (e) => [e.eur != null ? kD(e, true) : null, e.fcfa != null ? kD(e, false) : null].filter(Boolean),
@@ -2404,7 +2447,12 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const acc = accAll.filter((a) => !a.indispo), accX = accAll.filter((a) => a.indispo);
     const notes = [];
     const balances = CHR.applyBalances(accAll, ed.pos, notes);
-    const fon = ed.fon.map((x) => Object.assign({}, x));
+    let fon = ed.fon.map((x) => Object.assign({}, x));
+    if (opt.sco && opt.sco.length) {
+      const n0 = fon.filter((x) => CHR.canon(x.ent) === "SCO AO").length;
+      fon = fon.filter((x) => CHR.canon(x.ent) !== "SCO AO").concat(opt.sco.map((x) => ({ wk: CHR.weekOf(x.d0, W), ent: "SCO AO", nat: x.nat, lib: x.lib + (x.com ? " (" + x.com + ")" : ""), fcfa: x.amt, ret: "O", src: "Prévision trésorerie SCO, " + x.label })));
+      notes.push("SCO AO : prévision de trésorerie SCO reprise (" + opt.sco.length + " flux) à la place des " + n0 + " ligne(s) SCO du reporting.");
+    }
     const ded = ed.ded.map((x) => Object.assign({}, x, { fcfa: x.fcfa != null ? x.fcfa : x.eur * FX }));
     fon.concat(ded).forEach((x) => { const p = x.paid, d = x.pdate; delete x.paid; delete x.pdate; CHR.payApply(x, p, d); });
     const paid = CHR.paidNote(fon, ded, notes);
@@ -3070,7 +3118,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Fonctionnement", meta.files.audit + " – RECAP Semaine hors intragroupe (impôts, cotisations, salaires, prêts) et Répartition des charges (fournisseurs, détaillés et recalés sur le RECAP)."],
       ["Projets", meta.files.bilans.join(" ; ") + " – « Marchés et Depenses HT », € HT ; statut lu sur la couleur de police (vert « Montant à étaler » et rouge « FNP » = non réglé, bleu « Total facturé » = réglé). Semaine des paiements du mois suivant : PICI Projets de l'audit."],
       ["Loyers", meta.files.rents || "Aucun état des loyers chargé."],
-      ["SCO AO", meta.files.chris || "Aucun reporting de Christophe chargé : SCO AO sans flux."],
+      ["SCO AO", meta.files.sco ? meta.files.sco + " – prévision de trésorerie SCO (prioritaire) : encaissements clients, frais généraux (CNPS / CMU en charges sociales, DGI en impôts, personnel en salaires, autres en fournisseurs) et projets, par semaine." : meta.files.chris || "Aucun fichier SCO AO chargé : SCO AO sans flux."],
       meta.files.edit ? ["Mises à jour", meta.files.edit + " – reporting modifié : semaines, Retenu, montants et virements de l'équilibrage S1 repris. " + ((C.edit && C.edit.notes.join(" ")) || "")] : null,
       ["", ""],
       ["Règles de semaine", ""],
@@ -3559,6 +3607,10 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       var has = function (s) { return names.some(function (n) { return n.indexOf(s) === 0; }); };
       var kind = has("detail fonctionnement") && has("detail projets") ? "edit" : has("recap semaine hors intragroupe") ? "audit" : names.indexOf(RCI.BILAN_SHEET) >= 0 ? "bil" : has("civ position") ? "pos" : names.indexOf("reporting hebdo") >= 0 ? "chris" : "rents";
       if (kind === "rents") {
+        try { var sw = XLSX.read(buf, { type: "array", cellDates: true }); var sl = CHR.parseScoTreso(sw, st.pos ? st.pos.date : null);
+          if (sl && sl.length) { st.scoWb = sw; st.names.sco = file.name;
+            setFile("sco", "ok", "✓ " + esc(file.name) + "<br>" + sl.length + " flux SCO AO (feuille « " + esc(sl.sheet) + " ») · prioritaire sur le reporting de Christophe");
+            return; } } catch (e) { }
         try { var pw = XLSX.read(buf, { type: "array", cellDates: true }); var pl = CHR.parsePayments(pw); kind = "pays"; st.pays = pl; st.names.pays = file.name; st.payMap = {};
           setFile("pays", "ok", "✓ " + esc(file.name) + "<br>" + pl.length + " paiement(s), " + fmt(pl.reduce(function (a, x) { return a + x.amt; }, 0) / 1e6) + " M");
           return; } catch (e) { }
@@ -3649,7 +3701,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       var o = opts();
       if (!(st.audit && st.pos)) {
         st.L = null; st.CMP = null;
-        st.C = CHR.fromReporting(st.editWb, { sitDate: o.sitDate, countTbd: o.countTbd, pays: st.pays, payMap: st.payMap, payDeduct: o.payDeduct });
+        var sd1 = o.sitDate || (st.edit && st.edit.sit);
+        st.C = CHR.fromReporting(st.editWb, { sitDate: o.sitDate, countTbd: o.countTbd, pays: st.pays, payMap: st.payMap, payDeduct: o.payDeduct, sco: st.scoWb ? CHR.parseScoTreso(st.scoWb, sd1) : null });
         render(); return;
       }
       var bil = Object.keys(st.bilans).map(function (k) { return st.bilans[k]; });
@@ -3666,7 +3719,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         }
       } catch (e) { st.L = null; console.error(e); }
       var chris = st.chrisWb ? CHR.parseChristophe(st.chrisWb, o.sitDate || st.pos.date) : [];
-      st.C = CHR.compute({ recap: st.audit.recap, recapD: st.recapD, supp: st.audit.supp, pos: st.pos, rents: st.rents, bilans: bil, pici: st.pici, chris: chris, edit: st.edit, pays: st.pays }, o);
+      var sco = st.scoWb ? CHR.parseScoTreso(st.scoWb, o.sitDate || st.pos.date) : null;
+      st.C = CHR.compute({ recap: st.audit.recap, recapD: st.recapD, supp: st.audit.supp, pos: st.pos, rents: st.rents, bilans: bil, pici: st.pici, chris: chris, sco: sco, edit: st.edit, pays: st.pays }, o);
       st.CMP = CHR.compare(st.L, st.C, st.recapD);
       render();
     } catch (e) { banner("Erreur de calcul : " + e.message); st.C = null; console.error(e); }
@@ -3748,7 +3802,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   }
   $("goX").onclick = function () {
     run(this, function () {
-      var meta = { files: { pos: st.names.pos || st.names.edit, audit: st.names.audit || st.names.edit, bilans: Object.keys(st.bilans).map(function (k) { return st.bilans[k].file; }), rents: st.names.rents, chris: st.names.chris, edit: st.names.edit, pays: st.names.pays } };
+      var meta = { files: { pos: st.names.pos || st.names.edit, audit: st.names.audit || st.names.edit, bilans: Object.keys(st.bilans).map(function (k) { return st.bilans[k].file; }), rents: st.names.rents, chris: st.names.chris, sco: st.names.sco, edit: st.names.edit, pays: st.names.pays } };
       return CHR.buildExcel(st.C, st.L, st.CMP || { ents: [], entTot: {}, postes: [], proj: [], recapCheck: [], notes: ["Comparaison non disponible : reporting modifié importé sans les sources."] }, meta).then(function (buf) { var n = "Reporting_Hebdo_CIV_" + stamp() + ".xlsx"; dl(buf, n, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); return n; });
     });
   };
