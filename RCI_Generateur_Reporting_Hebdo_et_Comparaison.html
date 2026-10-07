@@ -105,7 +105,7 @@
     <div class="file" id="f-bil"><div class="need">Projets</div><h3>Bilans financiers (cash plans)</h3><div class="st">En attente… (RIVIERA et Village Notre Père, feuille « Marchés et Dépenses HT »)</div></div>
     <div class="file" id="f-rents"><div class="need">Facultatif</div><h3>État des loyers FIRST</h3><div class="st">En attente… (sans ce fichier, aucun loyer)</div></div>
     <div class="file" id="f-chris"><div class="need">Facultatif – SCO AO</div><h3>Reporting de Christophe</h3><div class="st">En attente… (feuille « Reporting Hebdo » : seuls les flux SCO AO sont repris)</div></div>
-    <div class="file" id="f-edit"><div class="need">Facultatif – mise à jour</div><h3>Reporting modifié</h3><div class="st">En attente… (reporting déjà généré puis corrigé : semaines, Retenu, montants et virements de l'équilibrage S1 sont repris)</div></div>
+    <div class="file" id="f-edit"><div class="need">Facultatif – mise à jour</div><h3>Reporting modifié</h3><div class="st">En attente… (reporting généré puis modifié : soldes, paiements effectués, paiements non prévus, semaines, Retenu et virements. Seul, il suffit pour refaire le reporting et la présentation de Christophe)</div></div>
   </div>
   <div id="banner" class="banner"></div>
 
@@ -2055,8 +2055,14 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       B.months.forEach((mo, i) => { const s = sum(B.lines.map((l) => l.v[i] || 0)); const t = B.total[i] || 0; if (Math.abs(s - t) > 1 && mo.y * 12 + mo.m >= sitM - 12 && mo.y * 12 + mo.m <= sitM + 3) notes.push(ent + " – " + MOIS_FR[mo.m] + " " + mo.y + " : somme des lignes (" + Math.round(s) + " €) ≠ ligne TOTAL (" + Math.round(t) + " €)."); });
     });
     ded.forEach((x) => { if (x.eur != null) x.fcfa = x.eur * FX; });
-    const edit = src.edit ? CHR.applyEdits(fon, ded, src.edit, WK, FX, acc) : null;
+    const edit = src.edit ? CHR.applyEdits(fon, ded, src.edit, WK, FX, acc, accX) : null;
     if (edit) edit.notes.forEach((n) => notes.push(n));
+    return CHR.summarize({ sit, W, WK, fon, ded, acc, accX, projInfo, rents, notes, recapWk, recapDate, opt, edit, eqTransfers: src.edit && src.edit.hasEq ? src.edit.transfers : undefined });
+  };
+
+  // ---------- synthèse commune (sources ou reporting modifié) ----------
+  CHR.summarize = function (b) {
+    const { sit, W, WK, fon, ded, acc, accX, projInfo, rents, notes, recapWk, recapDate, opt, edit, eqTransfers } = b;
 
     // tri
     const WR = (w) => { const i = WK.indexOf(w); return i >= 0 ? i : 9; };
@@ -2120,7 +2126,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     T.defProj = -sum(P.filter((p) => p.solde < -0.05).map((p) => p.solde));
     T.def = T.defSoc + T.defProj;
 
-    return { sit, W, WK, fon, ded, acc, accX, E, DED, P, T, rents, notes, recapWk, recapDate, opt, edit, eqTransfers: src.edit && src.edit.hasEq ? src.edit.transfers : undefined };
+    return { sit, W, WK, fon, ded, acc, accX, E, DED, P, T, rents, notes, recapWk: recapWk || [], recapDate: recapDate || [], opt, edit, eqTransfers, standalone: !!b.standalone };
   };
 })();
 
@@ -2254,6 +2260,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   "use strict";
   const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
   const str = (v) => (v == null ? "" : String(v).trim());
+  const dstr = (v) => (v instanceof Date ? CHR.util.dmy(new Date(Date.UTC(v.getFullYear(), v.getMonth(), v.getDate()))) : str(v));
   CHR.parseEdited = function (wb) {
     const find = (n) => wb.SheetNames.find((x) => RCI.util.norm(x) === RCI.util.norm(n));
     const rows = (n) => { const sh = find(n); return sh ? XLSX.utils.sheet_to_json(wb.Sheets[sh], { header: 1, raw: true, defval: null }) : []; };
@@ -2261,13 +2268,13 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     rows("Détail fonctionnement").slice(4).forEach((r) => {
       const fcfa = num(r[4]);
       if (!str(r[0]) || fcfa == null) return;
-      fon.push({ wk: str(r[0]), ent: str(r[1]), nat: str(r[2]), lib: str(r[3]), fcfa, ret: str(r[6]).toUpperCase() === "N" ? "N" : "O" });
+      fon.push({ wk: str(r[0]), ent: str(r[1]), nat: str(r[2]), lib: str(r[3]), fcfa, ret: str(r[6]).toUpperCase() === "N" ? "N" : "O", paid: num(r[7]), pdate: dstr(r[8]) });
     });
     rows("Détail projets & dettes").slice(4).forEach((r) => {
       if (!str(r[0])) return;
       const eur = num(r[7]), fcfa = num(r[8]);
       if (eur == null && fcfa == null) return;
-      ded.push({ wk: str(r[0]), key: str(r[1]), ent: str(r[2]), nat: str(r[3]), code: str(r[4]), lib: str(r[5]), entr: str(r[6]), eur, fcfa, ret: str(r[9]).toUpperCase() === "N" ? "N" : "O" });
+      ded.push({ wk: str(r[0]), key: str(r[1]), ent: str(r[2]), nat: str(r[3]), code: str(r[4]), lib: str(r[5]), entr: str(r[6]), eur, fcfa, ret: str(r[9]).toUpperCase() === "N" ? "N" : "O", paid: num(r[10]), pdate: dstr(r[11]) });
     });
     const eq = rows("Équilibrage S1");
     const TYPES = ["NIVELLEMENT VIA PICI", "AUTRES NIVELLEMENTS"];
@@ -2279,9 +2286,46 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       const amt = num(r[7]);
       if (TYPES.indexOf(t) >= 0 && amt && str(r[2]) && str(r[4])) transfers.push({ type: t, src: str(r[2]), dst: str(r[4]), amt, why: str(r[8]) });
     }
-    return { fon, ded, transfers, hasEq: h >= 0 };
+    // position : soldes (modifiables) des comptes
+    const pos = [];
+    const pr = rows(wb.SheetNames.find((x) => RCI.util.norm(x).indexOf("position ci") === 0) || "");
+    let sit = null;
+    const t1 = str((pr[0] || [])[0]).match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    if (t1) sit = new Date(Date.UTC(+t1[3], +t1[2] - 1, +t1[1]));
+    pr.forEach((r, i) => {
+      const name = str(r[2]), amt = num(r[5]);
+      if (i < 4 || !name || amt == null || RCI.util.norm(str(r[0])).indexOf("total") === 0) return;
+      const m = str(r[8]).match(/ligne\s+(\d+)/i);
+      pos.push({ ent: str(r[0]), bank: str(r[1]), name, dest: str(r[3]), bloc: str(r[4]), amt, src: num(r[9]), r: m ? +m[1] : null });
+    });
+    return { fon, ded, transfers, hasEq: h >= 0, pos, sit };
   };
-  CHR.applyEdits = function (fon, ded, ed, WK, FX, acc) {
+  CHR.payApply = function (x, paid, date) {
+    if (!paid || Math.abs(paid) < 0.5) return 0;
+    const p = Math.abs(paid);
+    const f0 = x.fcfa0 != null ? x.fcfa0 : x.fcfa;
+    x.fcfa0 = f0; x.paid = p; x.payDate = date || "";
+    x.fcfa = f0 < 0 ? Math.min(0, f0 + p) : Math.max(0, f0 - p);
+    if (x.eur != null) { x.eur0 = x.eur0 != null ? x.eur0 : x.eur; x.eur = x.fcfa / CHR.FX; }
+    return Math.min(p, Math.abs(f0));
+  };
+  CHR.applyBalances = function (accs, pos, notes) {
+    const ch = [];
+    accs.forEach((a) => {
+      const q = pos.find((x) => x.name === a.name);
+      if (q && Math.abs(q.amt - a.amt) > 0.5) { ch.push({ name: a.name, ent: a.ent, from: a.amt, to: q.amt }); a.amtSrc = a.amt; a.amt = q.amt; }
+    });
+    const M = (v) => (Math.round(v / 1e5) / 10).toFixed(1).replace(".", ",");
+    if (ch.length) notes.push("Soldes mis à jour : " + ch.map((c) => c.name + " " + M(c.from) + " → " + M(c.to) + " M").join(", ") + ".");
+    return ch;
+  };
+  CHR.paidNote = function (fon, ded, notes) {
+    const L = fon.concat(ded).filter((x) => x.paid > 0.5 && x.ret === "O");
+    const tot = L.reduce((a, x) => a + Math.min(x.paid, Math.abs(x.fcfa0)), 0);
+    if (L.length) notes.push("Paiements effectués saisis : " + L.length + " ligne(s), " + (Math.round(tot / 1e5) / 10).toFixed(1).replace(".", ",") + " M déduits du besoin.");
+    return { n: L.length, tot };
+  };
+  CHR.applyEdits = function (fon, ded, ed, WK, FX, acc, accX) {
     const notes = [], moved = [], removed = [], added = [], changed = [];
     // lignes d'un compte dédié qui n'existe plus (ex. dette FIRST passée en fonctionnement) : reprises en fonctionnement
     const keys = {};
@@ -2303,9 +2347,10 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       edits.forEach((e) => {
         let hit = -1;
         keysE(e).some((k) => (pool[k] || []).some((i) => { if (!used[i]) { hit = i; return true; } return false; }));
-        if (hit < 0) { const n = mk(e); list.push(n); used[list.length - 1] = 1; added.push(n); return; }
+        if (hit < 0) { const n = mk(e); list.push(n); used[list.length - 1] = 1; added.push(n); CHR.payApply(n, e.paid, e.pdate); return; }
         used[hit] = 1;
         const x = list[hit];
+        CHR.payApply(x, e.paid, e.pdate);
         if (WK.indexOf(e.wk) >= 0 && e.wk !== x.wk) { moved.push({ ent: x.ent, nat: x.nat, lib: x.lib, fcfa: x.fcfa, from: x.wk, to: e.wk }); x.wk = e.wk; }
         if (e.ret !== x.ret) { changed.push({ ent: x.ent, lib: x.lib, fcfa: x.fcfa, ret: e.ret }); x.ret = e.ret; }
       });
@@ -2319,7 +2364,44 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     if (changed.length) notes.push("Reporting modifié : " + changed.length + " ligne(s) avec Retenu modifié.");
     if (added.length) notes.push("Reporting modifié : " + added.length + " ligne(s) ajoutée(s) ou montant(s) modifié(s).");
     if (removed.length) notes.push("Reporting modifié : " + removed.length + " ligne(s) des sources absente(s) du fichier, passée(s) en Retenu = N.");
-    return { moved, changed, added, removed, notes, transfers: ed.transfers, hasEq: ed.hasEq };
+    const paid = CHR.paidNote(fon, ded, notes);
+    const balances = ed.pos && ed.pos.length ? CHR.applyBalances((acc || []).concat(accX || []), ed.pos, notes) : [];
+    return { moved, changed, added, removed, notes, transfers: ed.transfers, hasEq: ed.hasEq, paid, balances };
+  };
+})();
+
+/* ---------- reporting modifié seul : reconstruction du modèle sans les sources ---------- */
+(function () {
+  "use strict";
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  CHR.fromReporting = function (wb, opt) {
+    opt = Object.assign({ projDefaultWeek: "S2", loanProjEnts: ["TERASSON", "RIVIERA"] }, opt || {});
+    const ed = CHR.parseEdited(wb);
+    if (!ed.pos.length) throw new Error("Feuille de position introuvable dans le reporting.");
+    const sit = opt.sitDate || ed.sit;
+    if (!sit) throw new Error("Date de situation illisible (titre de la feuille de position).");
+    const W = CHR.weeks(sit), WK = W.map((w) => w.code), FX = CHR.FX;
+    const items = ed.pos.map((p) => ({ ent: p.ent, bank: p.bank, name: p.name, dest: p.dest, destN: RCI.util.norm(p.dest), amt: p.src != null ? p.src : p.amt, r: p.r }));
+    const accAll = CHR.accounts({ items }, opt);
+    const acc = accAll.filter((a) => !a.indispo), accX = accAll.filter((a) => a.indispo);
+    const notes = [];
+    const balances = CHR.applyBalances(accAll, ed.pos, notes);
+    const fon = ed.fon.map((x) => Object.assign({}, x));
+    const ded = ed.ded.map((x) => Object.assign({}, x, { fcfa: x.fcfa != null ? x.fcfa : x.eur * FX }));
+    fon.concat(ded).forEach((x) => { const p = x.paid, d = x.pdate; delete x.paid; delete x.pdate; CHR.payApply(x, p, d); });
+    const paid = CHR.paidNote(fon, ded, notes);
+    const projInfo = {};
+    ded.filter((x) => /-PROJET$/.test(x.key)).forEach((x) => {
+      const i = (projInfo[x.ent] = projInfo[x.ent] || { ent: x.ent, file: "Reporting modifié", ant: 0, cur: 0, next: 0, months: {}, all: {} });
+      if (x.ret !== "O") return;
+      const e0 = -(x.eur0 != null ? x.eur0 : x.eur != null ? x.eur : x.fcfa / FX);
+      if (WK.indexOf(x.wk) >= 0) i.ant += e0; else i.next += e0;
+    });
+    const rl = fon.filter((x) => x.nat === "ENCAISSEMENTS" && /^Loyer /.test(x.lib));
+    const rm = rl.length ? rl[0].lib.match(/^Loyer (.+?) – /) : null;
+    const rents = rl.length ? { month: rm ? rm[1] : "", total: sum(rl.filter((x) => x.ret === "O").map((x) => x.fcfa)) / 1e6, due: [], ent: CHR.canon(rl[0].ent), week: rl[0].wk } : null;
+    const edit = { moved: [], changed: [], added: [], removed: [], notes: notes.slice(), transfers: ed.transfers, hasEq: ed.hasEq, paid, balances };
+    return CHR.summarize({ sit, W, WK, fon, ded, acc, accX, projInfo, rents, notes, opt, edit, eqTransfers: ed.hasEq ? ed.transfers : undefined, standalone: true });
   };
 })();
 
@@ -2450,6 +2532,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   "use strict";
   const U = CHR.util;
   const NUM = "#,##0", DATE = "dd/mm/yyyy";
+  const SAISIE = "FFFFF2CC";
   const BLEU = "FFB9CDE5", VERT = "FF9BBB59", ROSE = "FFF2DCDB", ROSE2 = "FFD99694", NOIR = "FF000000", BLANC = "FFFFFFFF", GREEN = "FF00B050", GRIS = "FF808080";
   const WEEKP = [["N", "O"], ["P", "Q"], ["R", "S"], ["T", "U"], ["V", "W"]];
   const EURC = ["G", "H", "I", "J", "K"];
@@ -2485,12 +2568,14 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
 
     // ================= Position CI =================
     set(PO, "A1", "Position de trésorerie CI – soldes bancaires au " + U.dmy(C.sit), { font: { bold: true, size: 14 } });
-    head(PO, 4, ["Entité", "Banque", "Compte", "Destination (position CI)", "Bloc du reporting", "Solde FCFA", "Solde €", "Clé", "Source"]);
+    set(PO, "A2", "Solde FCFA (colonne F, en jaune) modifiable : le reporting et l'équilibrage se recalculent. Colonne J : solde d'origine de la position CI.", { font: { italic: true, color: { argb: "FF6B7280" } } });
+    head(PO, 4, ["Entité", "Banque", "Compte", "Destination (position CI)", "Bloc du reporting", "Solde FCFA", "Solde €", "Clé", "Source", "Solde position CI (origine)", "Écart (mise à jour)"]);
     const posRow = {};
     let r = 5;
     C.acc.forEach((a, i) => {
       const vals = [a.ent, a.bank || "", a.name, (a.dest || "").trim(), a.block === "SOC" ? "Compte de société" : "Compte dédié", a.amt, "=F" + r + "/" + T, a.key, "CIV position, ligne " + a.r];
-      vals.forEach((v, j) => { const c = set(PO, PO.getCell(r, j + 1).address, v, { bd: B4 }); if (j === 5 || j === 6) c.numFmt = NUM; });
+      vals.push(Math.round(a.amtSrc != null ? a.amtSrc : a.amt), "=F" + r + "-J" + r);
+      vals.forEach((v, j) => { const c = set(PO, PO.getCell(r, j + 1).address, v, { bd: B4 }); if (j === 5 || j === 6 || j >= 9) c.numFmt = NUM; if (j === 5) c.fill = fill(SAISIE); });
       posRow[i] = r; r++;
     });
     const PO_TOT = r;
@@ -2503,57 +2588,68 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       set(PO, "A" + rx, "Comptes indisponibles – exclus de la position (pour information)", { font: { bold: true } }); rx++;
       C.accX.forEach((a, k) => {
         posRowX[k] = rx;
-        [a.ent, a.bank || "", a.name, (a.dest || "").trim(), "Indisponible", a.amt, "=F" + rx + "/" + T, "", "CIV position, ligne " + a.r].forEach((v, j) => { const c = set(PO, PO.getCell(rx, j + 1).address, v, { bd: B4, font: { color: { argb: "FF7F7F7F" } } }); if (j === 5 || j === 6) c.numFmt = NUM; });
+        [a.ent, a.bank || "", a.name, (a.dest || "").trim(), "Indisponible", a.amt, "=F" + rx + "/" + T, "", "CIV position, ligne " + a.r, Math.round(a.amtSrc != null ? a.amtSrc : a.amt)].forEach((v, j) => { const c = set(PO, PO.getCell(rx, j + 1).address, v, { bd: B4, font: { color: { argb: "FF7F7F7F" } } }); if (j === 5 || j === 6) c.numFmt = NUM; });
         rx++;
       });
       set(PO, "A" + rx, "Total indisponible", { font: { bold: true, color: { argb: "FF7F7F7F" } } });
       set(PO, "F" + rx, "=SUM(F" + (r + 4) + ":F" + (rx - 1) + ")", { font: { bold: true, color: { argb: "FF7F7F7F" } }, fmt: NUM });
     }
-    [12, 18, 32, 46, 18, 18, 14, 22, 22].forEach((w, j) => (PO.getColumn(j + 1).width = w));
+    [12, 18, 32, 46, 18, 18, 14, 22, 22, 18, 16].forEach((w, j) => (PO.getColumn(j + 1).width = w));
 
     // ================= Détail fonctionnement =================
     set(DF, "A1", "Détail des flux de fonctionnement (frais de structure) – FCFA", { font: { bold: true, size: 14 } });
-    head(DF, 4, ["Semaine", "Entité", "Nature", "Fournisseur / libellé", "Montant FCFA", "Montant €", "Retenu (O/N)"]);
+    set(DF, "A2", "Paiement effectué : saisir le montant payé en H (et sa date en I) ; seul le reste à payer (J) alimente le reporting. Paiement non prévu : ajouter une ligne en bas (semaine, entité, nature, libellé, montant négatif, Retenu = O).", { font: { italic: true, color: { argb: "FF6B7280" } } });
+    head(DF, 4, ["Semaine", "Entité", "Nature", "Fournisseur / libellé", "Montant FCFA", "Montant €", "Retenu (O/N)", "Payé FCFA (saisie)", "Date de paiement", "Reste à payer FCFA"]);
     r = 5;
     fon.forEach((x) => {
       const grey = x.ret !== "O" ? { argb: "FF7F7F7F" } : undefined;
-      [x.wk, x.ent, x.nat, x.lib, Math.round(x.fcfa), "=E" + r + "/" + T, x.ret].forEach((v, j) => {
+      [x.wk, x.ent, x.nat, x.lib, Math.round(x.fcfa0 != null ? x.fcfa0 : x.fcfa), "=E" + r + "/" + T, x.ret, x.paid ? Math.round(x.paid) : null, x.payDate || null].forEach((v, j) => {
         const c = set(DF, DF.getCell(r, j + 1).address, v, { bd: B4, font: { color: grey } });
-        if (j === 4 || j === 5) c.numFmt = NUM;
-        if (j === 0 || j === 6) c.alignment = { horizontal: "center" };
+        if (j === 4 || j === 5 || j === 7) c.numFmt = NUM;
+        if (j === 0 || j === 6 || j === 8) c.alignment = { horizontal: "center" };
       });
       r++;
     });
     const DF_MAX = Math.max(r + 300, 500);
-    [10, 12, 24, 52, 16, 13, 10].forEach((w, j) => (DF.getColumn(j + 1).width = w));
-    DF.autoFilter = "A4:G" + (r - 1);
+    for (let k = 5; k <= DF_MAX; k++) {
+      set(DF, "J" + k, "=IF(E" + k + "<0,MIN(0,E" + k + "+N(H" + k + ")),MAX(0,E" + k + "-N(H" + k + ")))", { fmt: NUM, bd: k < r ? B4 : undefined });
+      ["H", "I"].forEach((col) => { const c = DF.getCell(col + k); c.fill = fill(SAISIE); if (k < r) c.border = B4; });
+    }
+    [10, 12, 24, 52, 16, 13, 10, 16, 13, 16].forEach((w, j) => (DF.getColumn(j + 1).width = w));
+    DF.autoFilter = "A4:J" + (r - 1);
 
     // ================= Détail projets & dettes =================
     set(DP, "A1", "Détail des flux projets & dettes (comptes dédiés)", { font: { bold: true, size: 14 } });
-    head(DP, 4, ["Semaine", "Compte dédié (clé)", "Entité", "Nature", "Code", "Libellé", "Entreprise", "Montant € HT", "Montant FCFA", "Retenu (O/N)"]);
+    set(DP, "A2", "Paiement effectué : saisir le montant payé en FCFA en K (et sa date en L) ; seul le reste à payer (M) alimente le reporting.", { font: { italic: true, color: { argb: "FF6B7280" } } });
+    head(DP, 4, ["Semaine", "Compte dédié (clé)", "Entité", "Nature", "Code", "Libellé", "Entreprise", "Montant € HT", "Montant FCFA", "Retenu (O/N)", "Payé FCFA (saisie)", "Date de paiement", "Reste à payer FCFA"]);
     r = 5;
     ded.forEach((x) => {
       const grey = x.ret !== "O" || WK.indexOf(x.wk) < 0 ? { argb: "FF7F7F7F" } : undefined;
-      const eur = x.eur != null ? Math.round(x.eur * 100) / 100 : "=I" + r + "/" + T;
-      const fc = x.eur != null ? "=H" + r + "*" + T : Math.round(x.fcfa);
-      [x.wk, x.key, x.ent, x.nat, x.code || "", x.lib, x.entr || "", eur, fc, x.ret].forEach((v, j) => {
+      const e0 = x.eur0 != null ? x.eur0 : x.eur, f0 = x.fcfa0 != null ? x.fcfa0 : x.fcfa;
+      const eur = e0 != null ? Math.round(e0 * 100) / 100 : "=I" + r + "/" + T;
+      const fc = e0 != null ? "=H" + r + "*" + T : Math.round(f0);
+      [x.wk, x.key, x.ent, x.nat, x.code || "", x.lib, x.entr || "", eur, fc, x.ret, x.paid ? Math.round(x.paid) : null, x.payDate || null].forEach((v, j) => {
         const c = set(DP, DP.getCell(r, j + 1).address, v, { bd: B4, font: { color: grey } });
-        if (j === 7 || j === 8) c.numFmt = NUM;
-        if (j === 0 || j === 9) c.alignment = { horizontal: "center" };
+        if (j === 7 || j === 8 || j === 10) c.numFmt = NUM;
+        if (j === 0 || j === 9 || j === 11) c.alignment = { horizontal: "center" };
       });
       r++;
     });
     const DP_MAX = Math.max(r + 300, 500);
-    [11, 22, 12, 22, 11, 40, 22, 14, 16, 10].forEach((w, j) => (DP.getColumn(j + 1).width = w));
-    DP.autoFilter = "A4:J" + (r - 1);
+    for (let k = 5; k <= DP_MAX; k++) {
+      set(DP, "M" + k, "=IF(I" + k + "<0,MIN(0,I" + k + "+N(K" + k + ")),MAX(0,I" + k + "-N(K" + k + ")))", { fmt: NUM, bd: k < r ? B4 : undefined });
+      ["K", "L"].forEach((col) => { const c = DP.getCell(col + k); c.fill = fill(SAISIE); if (k < r) c.border = B4; });
+    }
+    [11, 22, 12, 22, 11, 40, 22, 14, 16, 10, 16, 13, 16].forEach((w, j) => (DP.getColumn(j + 1).width = w));
+    DP.autoFilter = "A4:M" + (r - 1);
     [[DF, "G", DF_MAX], [DP, "J", DP_MAX]].forEach(([ws, col, mx]) => {
       ws.dataValidations.add(col + "5:" + col + mx, { type: "list", allowBlank: true, formulae: ['"O,N"'] });
       ws.dataValidations.add("A5:A" + mx, { type: "list", allowBlank: true, formulae: ['"S1,S2,S3,S4,S5,Après S5"'] });
     });
     const rngF = (c) => "'Détail fonctionnement'!$" + c + "$5:$" + c + "$" + DF_MAX;
     const rngP = (c) => "'Détail projets & dettes'!$" + c + "$5:$" + c + "$" + DP_MAX;
-    const sf = (w, e, n) => "SUMIFS(" + rngF("E") + "," + rngF("A") + "," + w + "," + rngF("G") + ',"O"' + (e ? "," + rngF("B") + "," + e : "") + (n ? "," + rngF("C") + "," + n : "") + ")";
-    const sp = (w, k, e, n) => "SUMIFS(" + rngP("I") + "," + rngP("A") + "," + w + "," + rngP("J") + ',"O"' + (k ? "," + rngP("B") + "," + k : "") + (e ? "," + rngP("C") + "," + e : "") + (n ? "," + rngP("D") + "," + n : "") + ")";
+    const sf = (w, e, n) => "SUMIFS(" + rngF("J") + "," + rngF("A") + "," + w + "," + rngF("G") + ',"O"' + (e ? "," + rngF("B") + "," + e : "") + (n ? "," + rngF("C") + "," + n : "") + ")";
+    const sp = (w, k, e, n) => "SUMIFS(" + rngP("M") + "," + rngP("A") + "," + w + "," + rngP("J") + ',"O"' + (k ? "," + rngP("B") + "," + k : "") + (e ? "," + rngP("C") + "," + e : "") + (n ? "," + rngP("D") + "," + n : "") + ")";
 
     // ================= Reporting Hebdo =================
     const ws = RH;
@@ -2812,6 +2908,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Mois suivant (projets)", "Semaine identifiée dans PICI Projets, sinon " + (C.opt.projDefaultWeek || "S2") + "."],
       ["Loyers", "Encaissement en " + (C.rents ? C.rents.week : "S2") + " (date non précisée dans l'état des loyers)."],
       ["Droits d'enregistrement", "Hors besoin, comme la présentation RCI (lignes conservées avec Retenu = N)."],
+      ["Mises à jour", "Soldes : colonne F de la position (modifiable). Paiements effectués : montant payé et date dans les feuilles de détail (colonnes en jaune) ; seul le reste à payer alimente le reporting. Paiements non prévus : nouvelles lignes dans les feuilles de détail. Le fichier modifié se réimporte dans le générateur HTML pour refaire la présentation."],
       ["Comptes indisponibles", (C.accX || []).map((a) => a.name).join(", ") + " : exclus de la position et du reporting (listés pour information dans la feuille de position)."],
       ["Dette FIRST", "Échéances des prêts FIRST et loyers à encaisser traités en fonctionnement de FIRST (pas de compte dédié)."],
       ["Prêts des projets", "TERASSON et RIVIERA : frais financiers déjà dans les cash plans, non ajoutés."],
@@ -2886,11 +2983,11 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
               const isPrj = nat === "FOURNISSEURS - PROJET";
               if (c.kind === "SCOPRJ" && !isPrj) return;
               if (c.kind === "FONC" && isPrj && hasPrj) return;
-              parts.push("SUMIFS(" + rngF("E") + "," + rngF("A") + ',"' + wk + '",' + rngF("B") + ',"' + c.ent + '",' + rngF("C") + ',"' + nat + '",' + rngF("G") + ',"O")');
+              parts.push("SUMIFS(" + rngF("J") + "," + rngF("A") + ',"' + wk + '",' + rngF("B") + ',"' + c.ent + '",' + rngF("C") + ',"' + nat + '",' + rngF("G") + ',"O")');
             });
           }
-          if (c.a && c.kind === "PROJ" && R.proj) parts.push("SUMIFS(" + rngP("I") + "," + rngP("A") + ',"' + wk + '",' + rngP("B") + ',"' + c.a.key + '",' + rngP("J") + ',"O")');
-          if (c.a && c.kind === "DETTE" && R.ded) R.ded.forEach((nat) => parts.push("SUMIFS(" + rngP("I") + "," + rngP("A") + ',"' + wk + '",' + rngP("B") + ',"' + c.a.key + '",' + rngP("D") + ',"' + nat + '",' + rngP("J") + ',"O")'));
+          if (c.a && c.kind === "PROJ" && R.proj) parts.push("SUMIFS(" + rngP("M") + "," + rngP("A") + ',"' + wk + '",' + rngP("B") + ',"' + c.a.key + '",' + rngP("J") + ',"O")');
+          if (c.a && c.kind === "DETTE" && R.ded) R.ded.forEach((nat) => parts.push("SUMIFS(" + rngP("M") + "," + rngP("A") + ',"' + wk + '",' + rngP("B") + ',"' + c.a.key + '",' + rngP("D") + ',"' + nat + '",' + rngP("J") + ',"O")'));
           if (parts.length) f = parts.join("+");
         }
         const cell = ws.getCell(r, 2 + c.j);
@@ -3101,7 +3198,10 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ], 0.5, Math.max(4.85, ty), 12.3, 1.7);
       const nm = C.acc.filter((a) => !a.mobil && !/ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5), ar = C.acc.filter((a) => /ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5);
       const ix = (C.accX || []).filter((a) => Math.abs(a.amt) > 0.5);
-      note(s, (ix.length ? "Hors position (indisponibles) : " + fmt(sum(ix.map((a) => a.amt)) / 1e6) + " M. " : "") + (nm.length ? "Non mobilisables : " + nm.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + (ar.length ? "À arbitrer : " + ar.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + "Projets en € HT à 655,957.");
+      const ed0 = C.edit || {}, upd = [];
+      if (ed0.paid && ed0.paid.n) upd.push("paiements effectués déduits " + fmt(ed0.paid.tot / 1e6) + " M");
+      if (ed0.balances && ed0.balances.length) upd.push(ed0.balances.length + " solde(s) mis à jour");
+      note(s, (upd.length ? "Mises à jour : " + upd.join(", ") + ". " : "") + (ix.length ? "Hors position (indisponibles) : " + fmt(sum(ix.map((a) => a.amt)) / 1e6) + " M. " : "") + (nm.length ? "Non mobilisables : " + nm.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + (ar.length ? "À arbitrer : " + ar.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + "Projets en € HT à 655,957.");
       footer(s, 3);
     }
     // ---- 4. comptes de paiement ----
@@ -3311,8 +3411,9 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
           st.pos = p; st.names.pos = file.name;
           setFile("pos", "ok", "✓ " + esc(file.name) + "<br>" + p.items.length + " comptes" + (p.date ? " · soldes au " + RCI.fd(p.date) : ""));
         } else if (kind === "edit") {
-          st.edit = CHR.parseEdited(XLSX.read(buf, { type: "array" })); st.names.edit = file.name;
-          setFile("edit", "ok", "✓ " + esc(file.name) + "<br>" + st.edit.fon.length + " lignes fonctionnement · " + st.edit.ded.length + " lignes projets & dettes · " + (st.edit.hasEq ? st.edit.transfers.length + " virement(s) saisi(s)" : "pas d'équilibrage"));
+          st.editWb = XLSX.read(buf, { type: "array", cellDates: true }); st.edit = CHR.parseEdited(st.editWb); st.names.edit = file.name;
+          setFile("edit", "ok", "✓ " + esc(file.name) + "<br>" + st.edit.fon.length + " lignes fonctionnement · " + st.edit.ded.length + " lignes projets & dettes · " + (st.edit.hasEq ? st.edit.transfers.length + " virement(s) saisi(s)" : "pas d'équilibrage") + " · " + st.edit.pos.length + " comptes" +
+            "<br>" + (st.audit && st.pos ? "mises à jour appliquées aux sources" : "suffit seul pour refaire le reporting et la présentation de Christophe"));
         } else if (kind === "chris") {
           st.chrisWb = XLSX.read(buf, { type: "array", cellDates: true }); st.names.chris = file.name;
           setFile("chris", "ok", "✓ " + esc(file.name) + "<br>flux SCO AO lus au calcul");
@@ -3329,20 +3430,23 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
 
   var first = true;
   function refreshAll(changed) {
-    var ready = !!(st.audit && st.pos);
-    ["step2", "step3", "step4"].forEach(function (id) { $(id).classList.toggle("hidden", !ready); });
-    ["goX", "goC", "goL"].forEach(function (id) { $(id).disabled = !ready; });
+    var full = !!(st.audit && st.pos), ready = full || !!st.editWb;
+    ["step2", "step3"].forEach(function (id) { $(id).classList.toggle("hidden", !ready); });
+    $("step4").classList.toggle("hidden", !full);
+    ["goX", "goC"].forEach(function (id) { $(id).disabled = !ready; });
+    $("goL").disabled = !full;
     if (!ready) return;
     if (changed) initOptions();
     recompute();
   }
   function initOptions() {
-    if (first || !$("o-sit").value) $("o-sit").value = toIso(st.pos.date || st.audit.proj.analysis || new Date());
+    var sd = st.pos ? st.pos.date : st.audit ? st.audit.proj.analysis : st.edit ? st.edit.sit : null;
+    if (first || !$("o-sit").value) $("o-sit").value = toIso(sd || new Date());
     first = false;
     var sm = $("o-rentMonth"), cur = sm.value;
     if (st.rents) {
       sm.innerHTML = st.rents.months.map(function (m) { return '<option value="' + m.key + '">' + esc(m.label) + "</option>"; }).join("");
-      var w = st.audit.recap.weeks, lastMonth = w[w.length - 1].m2 - 1;
+      var w = st.audit ? st.audit.recap.weeks : [{ m2: new Date().getUTCMonth() + 1 }], lastMonth = w[w.length - 1].m2 - 1;
       var def = st.rents.months.filter(function (m) { return m.idx === lastMonth; })[0] || st.rents.months[0];
       sm.value = st.rents.months.some(function (m) { return m.key === cur; }) ? cur : def.key;
     } else sm.innerHTML = "<option value=''>–</option>";
@@ -3357,6 +3461,11 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     try {
       banner("");
       var o = opts();
+      if (!(st.audit && st.pos)) {
+        st.L = null; st.CMP = null;
+        st.C = CHR.fromReporting(st.editWb, { sitDate: o.sitDate, countTbd: o.countTbd });
+        render(); return;
+      }
       var bil = Object.keys(st.bilans).map(function (k) { return st.bilans[k]; });
       var sd0 = o.sitDate || st.pos.date || new Date();
       var startKey = sd0.getUTCFullYear() + "-" + String(sd0.getUTCMonth() + 1).padStart(2, "0");
@@ -3378,13 +3487,24 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   }
   function render() {
     var C = st.C, T = C.T, L = st.L, CMP = st.CMP;
+    var paid = C.edit && C.edit.paid ? C.edit.paid.tot / 1e6 : 0;
     var k = [[fmt(T.tot) + " M", "Besoin S1 à S5 (Christophe)", ""], [fmt(T.totWk[0]) + " M", "dont S1", "red"], [fmt(T.cashAll) + " M", "Trésorerie au " + CHR.util.dmy(C.sit), ""], [fmt(T.defSoc) + " M", "Déficits des sociétés", "red"], [fmt(T.defProj) + " M", "Déficits des projets", "red"],
       [L ? fmt(L.T.tot) + " M" : "–", "Besoin de fonctionnement RCI (Laureen)", ""], [L ? fmt(-L.E.filter(function (e) { return e.pos < 0; }).reduce(function (a, e) { return a + e.pos; }, 0)) + " M" : "–", "Déficits RCI (spot)", "red"]];
+    if (paid > 0.05) k.push([fmt(paid) + " M", "Paiements effectués déduits du besoin", "green"]);
+    if (!L) k = k.filter(function (x) { return x[1].indexOf("RCI") < 0; });
     $("kpis").innerHTML = k.map(function (x) { return '<div class="kpi ' + x[2] + '"><b>' + x[0] + "</b><span>" + x[1] + "</span></div>"; }).join("");
     var h = "<table><tr><th>Entité</th>" + C.WK.map(function (w) { return "<th>" + w + "</th>"; }).join("") + "<th>Besoin</th><th>Trésorerie</th><th>Solde fin S5</th></tr>";
     C.E.forEach(function (e) { h += "<tr><td><b>" + esc(e.e) + "</b></td>" + e.wk.map(function (v) { return "<td>" + fmt(v) + "</td>"; }).join("") + "<td>" + fmt(e.besoin) + "</td><td>" + fmt(e.cash) + "</td><td>" + sgn(e.solde) + "</td></tr>"; });
     C.DED.forEach(function (d) { h += '<tr class="muted2"><td>' + esc(d.name) + "</td>" + d.wk.map(function (v) { return "<td>" + fmt(v) + "</td>"; }).join("") + "<td>" + fmt(d.out) + "</td><td>" + fmt(d.cashM) + "</td><td>" + sgn(d.solde) + "</td></tr>"; });
     $("tblC").innerHTML = h + "</table>";
+    if (!CMP) {
+      $("cmp").innerHTML = "";
+      var chk0 = C.notes.map(function (n) { return '<li class="warn">' + esc(n) + "</li>"; });
+      chk0.unshift("<li>Mode « reporting modifié seul » : reporting et présentation de Christophe recalculés à partir du fichier importé (comparaison RCI indisponible sans les sources).</li>");
+      $("checks").innerHTML = chk0.join("");
+      $("rentTable").innerHTML = '<span class="muted">' + (C.rents ? "Loyers repris du reporting : " + esc(C.rents.month) + ", " + fmt(C.rents.total) + " M en " + C.rents.week + "." : "Aucun loyer dans le reporting.") + "</span>";
+      return;
+    }
     var c = "<table><tr><th>Entité</th><th>Besoin RCI</th><th>Besoin reporting</th><th>Écart</th><th>Position RCI</th><th>Position reporting</th><th>Explication</th></tr>";
     CMP.ents.forEach(function (x) { c += "<tr><td><b>" + esc(x.e) + "</b></td><td>" + f1(x.lNeed) + "</td><td>" + f1(x.cNeed) + "</td><td>" + sgn(x.dNeed) + "</td><td>" + f1(x.lPos) + "</td><td>" + f1(x.cPos) + '</td><td class="why">' + esc(x.why) + "</td></tr>"; });
     c += '<tr class="total"><td>Total</td><td>' + f1(CMP.entTot.lNeed) + "</td><td>" + f1(CMP.entTot.cNeed) + "</td><td>" + fmt(CMP.entTot.dNeed, 1, true) + "</td><td>" + f1(CMP.entTot.lPos) + "</td><td>" + f1(CMP.entTot.cPos) + "</td><td></td></tr></table>";
@@ -3422,8 +3542,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   }
   $("goX").onclick = function () {
     run(this, function () {
-      var meta = { files: { pos: st.names.pos, audit: st.names.audit, bilans: Object.keys(st.bilans).map(function (k) { return st.bilans[k].file; }), rents: st.names.rents, chris: st.names.chris, edit: st.names.edit } };
-      return CHR.buildExcel(st.C, st.L, st.CMP, meta).then(function (buf) { var n = "Reporting_Hebdo_CIV_" + stamp() + ".xlsx"; dl(buf, n, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); return n; });
+      var meta = { files: { pos: st.names.pos || st.names.edit, audit: st.names.audit || st.names.edit, bilans: Object.keys(st.bilans).map(function (k) { return st.bilans[k].file; }), rents: st.names.rents, chris: st.names.chris, edit: st.names.edit } };
+      return CHR.buildExcel(st.C, st.L, st.CMP || { ents: [], entTot: {}, postes: [], proj: [], recapCheck: [], notes: ["Comparaison non disponible : reporting modifié importé sans les sources."] }, meta).then(function (buf) { var n = "Reporting_Hebdo_CIV_" + stamp() + ".xlsx"; dl(buf, n, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"); return n; });
     });
   };
   $("goC").onclick = function () {
