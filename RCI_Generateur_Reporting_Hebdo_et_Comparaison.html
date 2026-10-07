@@ -1903,7 +1903,10 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
 
   // ---------- comptes bancaires : bloc et clé ----------
   const isTbd = (x) => x.destN.indexOf("dedie") !== 0 && x.destN.indexOf("dsr") !== 0 && (x.destN.indexOf("?") >= 0 || x.destN.indexOf("placement") >= 0 || x.destN.indexOf("affect") >= 0);
+  // comptes indisponibles : exclus de la position (soldes bancaires du reporting)
+  CHR.INDISPO = [/debt\s*service/i, /first\s*_\s*ll\b/i, /first\s*_\s*disburs/i, /riviera\s*\(\s*augmentation/i, /riviera\s*\(\s*dsra/i];
   CHR.accounts = function (pos, opt) {
+    const ind = opt.indispo || CHR.INDISPO;
     return pos.items.map((x) => {
       const ent = canon(x.ent);
       const cpi = x.destN.indexOf("dedie paiement cpi") === 0;
@@ -1915,7 +1918,9 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       else if (debt) { block = "DED"; key = ent + "-DETTE"; role = "Service de la dette"; }
       else if (dsr) { block = "DED"; key = ent + "-" + x.name.toUpperCase().replace(/[^A-Z0-9]+/g, ""); role = "Compte réservé, non mobilisable"; }
       else if (tbd && !opt.countTbd) { block = "DED"; key = ent + "-ARBITRER"; role = "À arbitrer (« " + x.dest.trim() + " »)"; }
-      return Object.assign({}, x, { ent, block, key, role, tbd, cpi, debt, mobil: block === "SOC" || cpi || debt });
+      const indispo = ind.some((re) => re.test(x.name));
+      if (indispo) { block = "IND"; role = "Indisponible – hors position"; }
+      return Object.assign({}, x, { ent, block, key, role, tbd, cpi, debt: debt && !indispo, indispo, mobil: !indispo && (block === "SOC" || cpi || debt) });
     });
   };
 
@@ -1933,7 +1938,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const recapDate = rd.weeks.map((w) => dateNear(w.d1, w.m1, sit));
     const recapWk = recapDate.map((d) => weekOf(d, W));
     const loanProj = (opt.loanProjEnts || ["TERASSON", "RIVIERA"]).map(canon);
-    const acc = CHR.accounts(src.pos, opt);
+    const accAll = CHR.accounts(src.pos, opt);
+    const acc = accAll.filter((a) => !a.indispo), accX = accAll.filter((a) => a.indispo);
     const fon = [], ded = [];
     const addF = (o) => fon.push(Object.assign({ ret: "O" }, o));
     const notes = [];
@@ -2049,7 +2055,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       B.months.forEach((mo, i) => { const s = sum(B.lines.map((l) => l.v[i] || 0)); const t = B.total[i] || 0; if (Math.abs(s - t) > 1 && mo.y * 12 + mo.m >= sitM - 12 && mo.y * 12 + mo.m <= sitM + 3) notes.push(ent + " – " + MOIS_FR[mo.m] + " " + mo.y + " : somme des lignes (" + Math.round(s) + " €) ≠ ligne TOTAL (" + Math.round(t) + " €)."); });
     });
     ded.forEach((x) => { if (x.eur != null) x.fcfa = x.eur * FX; });
-    const edit = src.edit ? CHR.applyEdits(fon, ded, src.edit, WK, FX) : null;
+    const edit = src.edit ? CHR.applyEdits(fon, ded, src.edit, WK, FX, acc) : null;
     if (edit) edit.notes.forEach((n) => notes.push(n));
 
     // tri
@@ -2114,7 +2120,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     T.defProj = -sum(P.filter((p) => p.solde < -0.05).map((p) => p.solde));
     T.def = T.defSoc + T.defProj;
 
-    return { sit, W, WK, fon, ded, acc, E, DED, P, T, rents, notes, recapWk, recapDate, opt, edit, eqTransfers: src.edit && src.edit.hasEq ? src.edit.transfers : undefined };
+    return { sit, W, WK, fon, ded, acc, accX, E, DED, P, T, rents, notes, recapWk, recapDate, opt, edit, eqTransfers: src.edit && src.edit.hasEq ? src.edit.transfers : undefined };
   };
 })();
 
@@ -2275,8 +2281,18 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     }
     return { fon, ded, transfers, hasEq: h >= 0 };
   };
-  CHR.applyEdits = function (fon, ded, ed, WK, FX) {
+  CHR.applyEdits = function (fon, ded, ed, WK, FX, acc) {
     const notes = [], moved = [], removed = [], added = [], changed = [];
+    // lignes d'un compte dédié qui n'existe plus (ex. dette FIRST passée en fonctionnement) : reprises en fonctionnement
+    const keys = {};
+    (acc || []).forEach((a) => (keys[a.key] = 1));
+    const edFon = ed.fon.slice(), edDed = [];
+    ed.ded.forEach((x) => {
+      if (keys[x.key] || /-PROJET$/.test(x.key)) { edDed.push(x); return; }
+      const nat = x.nat === "Remboursement de prêt" ? "REMBOURSEMENT DE PRÊTS" : x.nat === "Encaissements de loyers" ? "ENCAISSEMENTS" : "AUTRES DÉCAISSEMENTS";
+      edFon.push({ wk: x.wk, ent: x.ent, nat, lib: x.lib, fcfa: x.fcfa != null ? x.fcfa : x.eur * FX, ret: x.ret });
+    });
+    ed = Object.assign({}, ed, { fon: edFon, ded: edDed });
     const r2 = (v) => Math.round(v);
     const kF = (x) => [x.ent, x.nat, x.lib, r2(x.fcfa)].join("|");
     const kD = (x, useEur) => [x.key, x.nat, x.code, x.lib, useEur ? r2(x.eur * 100) : r2(x.fcfa)].join("|");
@@ -2327,6 +2343,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const loanProj = (C.opt.loanProjEnts || ["TERASSON", "RIVIERA"]).map(canon);
     const LE = {};
     (L ? L.E : []).forEach((x) => (LE[canon(x.e)] = x));
+    const rentFon = (e) => sum(C.fon.filter((x) => x.ent === e && inW(x) && x.nat === "ENCAISSEMENTS" && /^Loyer /.test(x.lib)).map((x) => x.fcfa)) / M;
     const dedOf = (e, nat, sign) => sum(C.ded.filter((x) => x.ent === e && inW(x) && x.nat === nat && (sign > 0 ? x.fcfa > 0 : x.fcfa < 0)).map((x) => x.fcfa)) / M;
     const allEnts = [];
     C.E.forEach((x) => allEnts.push(x.e));
@@ -2335,7 +2352,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const ents = allEnts.map((e) => {
       const c = C.E.find((x) => x.e === e);
       const l = LE[e];
-      const loanD = -dedOf(e, "Remboursement de prêt", -1), rentD = dedOf(e, "Encaissements de loyers", 1);
+      const loanD = -dedOf(e, "Remboursement de prêt", -1), rentD = dedOf(e, "Encaissements de loyers", 1), rentT = rentD + rentFon(e);
       const cNeed = c ? c.besoin + loanD : 0;
       const cCash = c ? c.cash : 0;
       const cPos = c ? c.solde - loanD + rentD : 0;
@@ -2349,8 +2366,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         const d = parts.filter((p) => Math.abs(p[1] - p[2]) >= 0.05).map((p) => p[0] + " " + (p[1] - p[2] > 0 ? "+" : "") + f1(p[1] - p[2]));
         if (d.length) why.push("Besoin : " + d.join(", ")); else why.push("Même besoin");
         if (Math.abs(cCash - l.cash) >= 0.05) why.push("Trésorerie : " + (cCash - l.cash > 0 ? "+" : "") + f1(cCash - l.cash) + (l.tbd > 0.05 ? " (compte à destination non tranchée " + (C.opt.countTbd ? "compté dans le reporting" : "non compté") + ")" : " (comptes « Dédié paiement Projet SCO » ou comptes non classés en fonctionnement)"));
-        if (Math.abs(rentD - (l.loy || 0)) >= 0.05) why.push("Loyers : " + f1(rentD) + " contre " + f1(l.loy || 0));
-        const encL = c.enc; if (encL > 0.05) why.push("Encaissements prévus " + f1(encL) + " (non pris par la présentation RCI)");
+        if (Math.abs(rentT - (l.loy || 0)) >= 0.05) why.push("Loyers : " + f1(rentT) + " contre " + f1(l.loy || 0));
+        const encL = c.enc - rentFon(e); if (encL > 0.05) why.push("Encaissements prévus " + f1(encL) + " (non pris par la présentation RCI)");
       }
       o.why = why.join(" · ");
       return o;
@@ -2368,7 +2385,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       P("Cotisations sociales", (l) => l.cot, (c) => c.cot, "Lignes du RECAP placées dans des semaines hors horizon"),
       P("Salaires", (l) => l.sal, (c) => c.sal, "Lignes du RECAP placées dans des semaines hors horizon"),
       P("Remboursement de prêts", (l) => l.pret, (c, e) => c.pret - dedOf(e, "Remboursement de prêt", -1), "Prêts rattachés aux projets traités différemment"),
-      P("Loyers à encaisser", (l) => l.loy || 0, (c, e) => dedOf(e, "Encaissements de loyers", 1), "Mois de loyers ou loyers encaissés différents"),
+      P("Loyers à encaisser", (l) => l.loy || 0, (c, e) => dedOf(e, "Encaissements de loyers", 1) + rentFon(e), "Mois de loyers ou loyers encaissés différents"),
     ];
     const onlyC = ents.filter((x) => !LE[x.e] && x.cNeed > 0.05);
     if (onlyC.length) postes.push({ p: "Entités hors présentation RCI", l: 0, c: sum(onlyC.map((x) => x.cNeed)), d: sum(onlyC.map((x) => x.cNeed)), why: onlyC.map((x) => x.e + " " + f1(x.cNeed)).join(", ") });
@@ -2418,7 +2435,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       notes.push("Trésorerie : compte(s) à destination non tranchée " + (C.opt.countTbd ? "comptés" : "non comptés") + " dans le reporting, " + (C.opt.countTbdRCI ? "comptés" : "non comptés") + " dans la présentation RCI.");
       if (onlyC.length) notes.push("Périmètre : " + onlyC.map((x) => x.e).join(", ") + " ne figure(nt) que dans le reporting.");
       notes.push("Droits d'enregistrement : exclus des deux côtés.");
-      if (C.rents) notes.push("Loyers : " + C.rents.month + ", encaissement placé en " + C.rents.week + " sur le compte de service de la dette.");
+      if (C.rents) notes.push("Loyers : " + C.rents.month + ", encaissement placé en " + C.rents.week + (C.DED.some((d) => d.debt) ? " sur le compte de service de la dette." : " en fonctionnement de " + C.rents.ent + "."));
+      if (C.accX && C.accX.length) notes.push("Comptes indisponibles exclus de la position du reporting : " + C.accX.map((a) => a.name).join(", ") + " (" + f1(sum(C.accX.map((a) => a.amt)) / M) + " M). La présentation RCI exclut aussi ces fonds (DSR, augmentation, LL, disbursement).");
     } else notes.push("Présentation RCI non calculée : audit sans les feuilles nécessaires.");
     return { ents, entTot, postes, proj, recapCheck, notes };
   };
@@ -2479,6 +2497,16 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     set(PO, "A" + r, "TOTAL", { font: { bold: true }, bd: { top: med, bottom: med } });
     set(PO, "F" + r, "=SUM(F5:F" + (r - 1) + ")", { font: { bold: true }, fmt: NUM, bd: { top: med, bottom: med } });
     set(PO, "G" + r, "=SUM(G5:G" + (r - 1) + ")", { font: { bold: true }, fmt: NUM, bd: { top: med, bottom: med } });
+    if (C.accX && C.accX.length) {
+      let rx = r + 3;
+      set(PO, "A" + rx, "Comptes indisponibles – exclus de la position (pour information)", { font: { bold: true } }); rx++;
+      C.accX.forEach((a) => {
+        [a.ent, a.bank || "", a.name, (a.dest || "").trim(), "Indisponible", a.amt, "=F" + rx + "/" + T, "", "CIV position, ligne " + a.r].forEach((v, j) => { const c = set(PO, PO.getCell(rx, j + 1).address, v, { bd: B4, font: { color: { argb: "FF7F7F7F" } } }); if (j === 5 || j === 6) c.numFmt = NUM; });
+        rx++;
+      });
+      set(PO, "A" + rx, "Total indisponible", { font: { bold: true, color: { argb: "FF7F7F7F" } } });
+      set(PO, "F" + rx, "=SUM(F" + (r + 4) + ":F" + (rx - 1) + ")", { font: { bold: true, color: { argb: "FF7F7F7F" } }, fmt: NUM });
+    }
     [12, 18, 32, 46, 18, 18, 14, 22, 22].forEach((w, j) => (PO.getColumn(j + 1).width = w));
 
     // ================= Détail fonctionnement =================
@@ -2724,7 +2752,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     set(c, "A1", "Contrôles de cohérence entre les sources et le reporting", { font: { bold: true, size: 14 } }); k = 3;
     set(c, "A" + k, "1. Soldes bancaires au " + U.dmy(C.sit) + " (FCFA)", { font: { bold: true } }); k++;
     th(["Contrôle", "Reporting", "Position CI", "Écart", "Commentaire"]);
-    line(["Total comptes de sociétés + comptes dédiés", "='Reporting Hebdo'!M" + TG, "='" + posName + "'!F" + PO_TOT, "=B" + k + "-C" + k, "Somme de toutes les lignes bancaires de la feuille « CIV position »."], [null, NUM, NUM, NUM]);
+    line(["Total comptes de sociétés + comptes dédiés", "='Reporting Hebdo'!M" + TG, "='" + posName + "'!F" + PO_TOT, "=B" + k + "-C" + k, "Somme des lignes bancaires disponibles de la feuille « CIV position » (comptes indisponibles exclus)."], [null, NUM, NUM, NUM]);
     k++;
     set(c, "A" + k, "2. Fonctionnement : reporting vs RECAP de l'audit (S1 à S4 de l'audit, M FCFA)", { font: { bold: true } }); k++;
     th(["Entité", "Reporting (fournisseurs, impôts, cotisations, salaires, prêts)", "RECAP de l'audit", "Écart", "Commentaire"]);
@@ -2763,6 +2791,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Mois suivant (projets)", "Semaine identifiée dans PICI Projets, sinon " + (C.opt.projDefaultWeek || "S2") + "."],
       ["Loyers", "Encaissement en " + (C.rents ? C.rents.week : "S2") + " (date non précisée dans l'état des loyers)."],
       ["Droits d'enregistrement", "Hors besoin, comme la présentation RCI (lignes conservées avec Retenu = N)."],
+      ["Comptes indisponibles", (C.accX || []).map((a) => a.name).join(", ") + " : exclus de la position et du reporting (listés pour information dans la feuille de position)."],
+      ["Dette FIRST", "Échéances des prêts FIRST et loyers à encaisser traités en fonctionnement de FIRST (pas de compte dédié)."],
       ["Prêts des projets", "TERASSON et RIVIERA : frais financiers déjà dans les cash plans, non ajoutés."],
       ["", ""],
       ["Conventions", ""],
@@ -2771,7 +2801,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       ["Retenu", "O = intégré au reporting ; N = conservé pour traçabilité. Passer une ligne à O l'intègre automatiquement."],
       ["", ""],
       ["Équilibrage S1", ""],
-      ["Compte payeur", "Sociétés : compte « Dédié besoin de fonctionnement » au plus gros solde ; fournisseurs projets : compte « Dédié paiement CPI » (SCO AO : BACI-Projet) ; échéances FIRST : compte Debt Service ; RHD CI (sans compte) : paiement par PICI pour son compte."],
+      ["Compte payeur", "Sociétés : compte « Dédié besoin de fonctionnement » au plus gros solde ; fournisseurs projets : compte « Dédié paiement CPI » (SCO AO : BACI-Projet) ; échéances de prêts FIRST : en fonctionnement, sur le compte payeur de FIRST ; RHD CI (sans compte) : paiement par PICI pour son compte."],
       ["Autres nivellements", "Regroupement des comptes d'une même entité sur son compte payeur ; BNI-RIVIERA courant mobilisé pour RIVIERA, sous réserve d'arbitrage."],
       ["Nivellement via PICI", "Excédents PICI puis FIRST vers les sociétés en déficit : impôts, cotisations et salaires d'abord, fournisseurs ensuite, en commençant par les plus petits déficits."],
       ["Liens", "Paiements : SUMIFS sur les feuilles de détail (semaine S1, Retenu = O) ; soldes : position CI ; nivellements : tableau des virements, modifiable."],
@@ -2817,7 +2847,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     const TR = (col) => "$" + col + "$" + (tStart + 1) + ":$" + col + "$" + tEnd;
     const OBS = { "NIVELLEMENT VIA PICI": "Excédents PICI puis FIRST vers les sociétés en déficit : impôts, cotisations et salaires d'abord, fournisseurs ensuite",
       "AUTRES NIVELLEMENTS": "Virements entre comptes d'une même entité (BNI-RIVIERA courant : sous réserve d'arbitrage)",
-      "FOURNISSEURS-PROJETS": "Cash plans : comptes « Dédié paiement CPI » ; SCO AO : BACI-Projet", "ÉCHÉANCES": "Service de la dette FIRST : compte Debt Service",
+      "FOURNISSEURS-PROJETS": "Cash plans : comptes « Dédié paiement CPI » ; SCO AO : BACI-Projet", "ÉCHÉANCES": "Échéances de prêts FIRST : dépenses de fonctionnement, compte payeur de FIRST",
       "ENREGISTREMENTS": "Hors besoin (droits d'enregistrement, Retenu = N)" };
     const payerOf = (ent, kind) => { const cs = cols.filter((c) => c.ent === ent && c.kind === kind); return cs.length ? cs.reduce((a, b) => (b.bal > a.bal ? b : a)) : null; };
     ROWS.forEach((R, k) => {
@@ -3017,10 +3047,10 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       };
       block(0.5, "A. Besoin de trésorerie", "Fonctionnement, projets et dette, par semaine", [["3", "Besoin par semaine et déficits à couvrir"]],
         M_(T.tot) + " à payer de S1 à S5, dont " + M_(T.totWk[0]) + " dès S1 ; " + M_(T.def) + " de déficits",
-        "Fournisseurs, impôts, cotisations et salaires des sociétés ; cash plans des projets ; service de la dette");
+        "Fournisseurs, impôts, cotisations, salaires et échéances de prêts des sociétés ; cash plans des projets");
       block(6.85, "B. Paiement", "Comptes bancaires mobilisables au " + sitS, [["4", "Comptes de paiement par entité et nature"], ["5", "Options de couverture et décisions"], ["6", "Équilibrage S1 : virements et reste à financer"]],
         "Couverture des déficits : crédit spot, avances intragroupe ou comptes à arbitrer",
-        "Comptes « Dédié besoin de fonctionnement » des sociétés, comptes « Dédié paiement CPI » des projets, service de la dette");
+        "Comptes « Dédié besoin de fonctionnement » des sociétés et comptes « Dédié paiement CPI » des projets ; comptes indisponibles exclus");
       footer(s, 2);
     }
     // ---- 3. besoin par semaine ----
@@ -3049,7 +3079,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         ["Fonctionnement : ", (defs.length ? "déficits " + defs.slice(0, 6).map((e) => e.e + " " + M_(-e.solde)).join(", ") : "aucun déficit") + (sur.length ? " ; excédents " + sur.slice(0, 3).map((e) => e.e + " " + M_(e.solde)).join(", ") : "") + "."],
       ], 0.5, Math.max(4.85, ty), 12.3, 1.7);
       const nm = C.acc.filter((a) => !a.mobil && !/ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5), ar = C.acc.filter((a) => /ARBITRER$/.test(a.key) && Math.abs(a.amt) > 0.5);
-      note(s, (nm.length ? "Non mobilisables : " + nm.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + (ar.length ? "À arbitrer : " + ar.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + "Projets en € HT à 655,957.");
+      const ix = (C.accX || []).filter((a) => Math.abs(a.amt) > 0.5);
+      note(s, (ix.length ? "Hors position (indisponibles) : " + fmt(sum(ix.map((a) => a.amt)) / 1e6) + " M. " : "") + (nm.length ? "Non mobilisables : " + nm.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + (ar.length ? "À arbitrer : " + ar.map((a) => a.name + " " + fmt(a.amt / 1e6)).join(", ") + ". " : "") + "Projets en € HT à 655,957.");
       footer(s, 3);
     }
     // ---- 4. comptes de paiement ----
@@ -3074,7 +3105,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         s.addShape(pres.shapes.RECTANGLE, { x, y: ly + 0.03, w: 0.22, h: 0.16, fill: { color: c[0] }, line: { color: LINE, width: 0.5 } });
         s.addText(c[2], { x: x + 0.3, y: ly, w: 2.2, h: 0.22, fontFace: F, fontSize: 9.5, color: c[1], margin: 0, valign: "middle", isTextBox: true });
       });
-      bullets(s, [["Règle : ", "chaque société paie depuis ses comptes « Dédié besoin de fonctionnement », impôts et cotisations en premier ; chaque projet paie depuis son compte « Dédié paiement CPI » ; les échéances de prêts passent par le compte de service de la dette."]], 0.5, ly + 0.26, 12.3, 0.42, 11);
+      bullets(s, [["Règle : ", "chaque société paie depuis ses comptes « Dédié besoin de fonctionnement », impôts et cotisations en premier ; chaque projet paie depuis son compte « Dédié paiement CPI » ; les échéances de prêts FIRST sont payées en fonctionnement ; les comptes indisponibles sont exclus."]], 0.5, ly + 0.26, 12.3, 0.42, 11);
       note(s, "Solde fin S5 = trésorerie au " + U.ddmm(C.sit) + " + flux prévus de S1 à S5 (encaissements compris).", 6.85);
       footer(s, 4);
     }
@@ -3113,7 +3144,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
         "Choisir la solution des sociétés en déficit (" + M_(T.defSoc) + ") : crédit spot, avances intragroupe ou combinaison.",
         tbd.length ? "Trancher l'affectation de " + tbd.map((d) => d.name + " (" + M_(d.cashM) + ")").join(", ") + " : elle conditionne l'option C." : "Préparer le tirage des prêts des projets en déficit.",
         enc.length ? "Confirmer les encaissements prévus (" + M_(sum(enc.map((x) => x.fcfa)) / 1e6) + "), dont " + enc.sort((a, b) => b.fcfa - a.fcfa)[0].lib + "." : null,
-        C.rents ? "Affecter les loyers de " + C.rents.month + " (" + M_(C.rents.total) + ") au service de la dette." : null,
+        C.rents ? "Confirmer les loyers de " + C.rents.month + " (" + M_(C.rents.total) + ")" + (C.DED.some((d) => d.debt) ? ", affectés au service de la dette." : ", encaissés en fonctionnement de " + C.rents.ent + ".") : null,
         nN ? "Revoir les " + nN + " lignes non retenues du reporting (intragroupe, droits d'enregistrement, loyers encaissés)." : null,
       ].filter(Boolean);
       const runs = [{ text: "Décisions attendues", options: { bold: true, color: GOLD, fontSize: 13, breakLine: true, paraSpaceAfter: 6 } }];
