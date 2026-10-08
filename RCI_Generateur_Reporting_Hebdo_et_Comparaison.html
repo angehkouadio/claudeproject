@@ -140,6 +140,22 @@
     <div class="kpis" id="kpis"></div>
     <h3>Besoin (–) ou surplus (+) de trésorerie par semaine (MFCFA)</h3><div id="tblN"></div>
     <h3>Paiements exécutés – imputation sur les besoins</h3><div id="payTable"></div>
+    <div id="mailBox" class="hidden">
+      <h3>Mail d'envoi du reporting (proposition à relire)</h3>
+      <div class="card">
+        <label for="m-n">Besoin brut et urgences calculés sur</label>
+        <select id="m-n"><option value="1">la semaine 1</option><option value="2" selected>les semaines 1 et 2 (mi-mois)</option><option value="5">les semaines 1 à 5</option></select>
+        <label for="m-subj" style="margin-top:10px">Objet</label><input type="text" id="m-subj">
+        <label for="m-body" style="margin-top:10px">Message (modifiable)</label>
+        <textarea id="m-body" rows="24" style="font-family:inherit;line-height:1.45"></textarea>
+        <div class="btns" style="margin-top:10px">
+          <button class="go" id="m-copy" type="button" style="padding:10px 18px;font-size:14px">Copier le message</button>
+          <button class="go" id="m-open" type="button" style="padding:10px 18px;font-size:14px">Ouvrir dans la messagerie</button>
+          <button class="go" id="m-reset" type="button" style="padding:10px 18px;font-size:14px;background:#6B7280">Régénérer</button>
+          <span id="m-msg" class="msg"></span>
+        </div>
+      </div>
+    </div>
     <h3>Flux par semaine et soldes théoriques (MFCFA)</h3><div id="tblC"></div>
     <h3>Contrôles</h3><ul class="checks" id="checks"></ul>
   </div>
@@ -3598,6 +3614,100 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   };
 })();
 
+/* =====================================================================
+   CHR.mailDraft : projet de mail d'envoi du reporting (modèle d'Ange)
+   C = modèle calculé ; o = { n: semaines retenues (2 = mi-mois), greet, sign }
+   ===================================================================== */
+(function () {
+  "use strict";
+  const sum = (a) => a.reduce((x, y) => x + y, 0);
+  const MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+  const NAME = { FIRST: "SCI FIRST", RIVIERA: "RIVIERA", TERASSON: "TERASSON", PICI: "PICI", "INFI SOFT": "INFI", "SCO AO": "SCO AO" };
+  const nm = (e) => NAME[e] || e;
+  // montants en M FCFA : « 2,5 Mds », « 400 M », « 87 M »
+  const amt = (m) => {
+    const a = Math.abs(m);
+    if (a >= 1000) return (Math.round(a / 100) / 10).toFixed(1).replace(".", ",").replace(",0", "") + " Mds";
+    return (a >= 100 ? Math.round(a / 10) * 10 : Math.round(a)) + " M";
+  };
+  const list = (a) => (a.length <= 1 ? a.join("") : a.slice(0, -1).join(", ") + " et " + a[a.length - 1]);
+  const NAT = { "FOURNISSEURS - FGX": "frais généraux", "IMPÔTS ET TAXES": "fiscalité", "CHARGES SOCIALES": "charges sociales", SALAIRES: "salaires", "REMBOURSEMENT DE PRÊTS": "échéances", "FOURNISSEURS - PROJET": "fournisseurs projets", "AUTRES DÉCAISSEMENTS": "autres décaissements" };
+
+  CHR.mailDraft = function (C, o) {
+    o = o || {};
+    const n = Math.max(1, Math.min(o.n || 2, C.WK.length));
+    const WKn = C.WK.slice(0, n), endD = C.W[n - 1].d1;
+    const U = CHR.util;
+    const inH = (x) => x.ret === "O" && WKn.indexOf(x.wk) >= 0;
+    // besoin brut (décaissements) sur l'horizon
+    const decF = C.fon.filter((x) => inH(x) && x.fcfa < 0);
+    const decP = C.ded.filter((x) => inH(x) && x.fcfa < 0 && /-PROJET$/.test(x.key));
+    const brut = -sum(decF.map((x) => x.fcfa)) / 1e6 - sum(decP.map((x) => x.fcfa)) / 1e6;
+    const proj = -sum(decP.map((x) => x.fcfa)) / 1e6;
+    // détail par entité (fonctionnement)
+    const natTxt = (e) => {
+      const L = decF.filter((x) => x.ent === e);
+      const by = {};
+      const lenders = [...new Set(L.filter((x) => x.nat === "REMBOURSEMENT DE PRÊTS").map((x) => (/stanbic|sgci|soci[eé]t[eé] g[eé]n[eé]rale|boa|ecobank|bni|nsia|bici/i.exec(x.lib) || [""])[0].toUpperCase()).filter(Boolean))];
+      L.forEach((x) => {
+        let k = NAT[x.nat] || "autres décaissements";
+        if (x.nat === "REMBOURSEMENT DE PRÊTS") k = "échéances " + (lenders.length ? list(lenders) : "de prêts");
+        by[k] = (by[k] || 0) - x.fcfa / 1e6;
+      });
+      const tot = sum(Object.values(by));
+      const ks = Object.keys(by).sort((a, b) => by[b] - by[a]).filter((k, i) => i < 3 && by[k] >= tot * 0.1);
+      return { tot, txt: list(ks) };
+    };
+    const E = C.E.map((e) => {
+      const d = natTxt(e.e);
+      return { e: e.e, besoin: d.tot, nat: d.txt, sol: e.soldes[n - 1] };
+    }).filter((x) => x.besoin >= 0.5);
+    // couverture : excédents des comptes de sociétés (PICI d'abord, puis les autres) affectés aux plus petits déficits
+    const pool = C.E.filter((e) => (e.e === "PICI" || e.e === "FIRST") && e.soldes[n - 1] > 0.5).map((e) => ({ e: e.e, v: e.soldes[n - 1] })).sort((a, b) => (a.e === "PICI" ? -1 : b.e === "PICI" ? 1 : b.v - a.v));
+    const cover = {};
+    const top0 = E.slice().sort((a, b) => b.besoin - a.besoin), main0 = top0.filter((x) => x.besoin >= 50);
+    main0.filter((x) => x.sol < -0.5).sort((a, b) => b.sol - a.sol).forEach((x) => {
+      let gap = -x.sol; const src = [];
+      pool.forEach((p) => { if (gap < 0.5 || p.v < 0.5 || p.e === x.e) return; const t = Math.min(gap, p.v); p.v -= t; gap -= t; src.push(nm(p.e)); });
+      cover[x.e] = { left: gap, src };
+    });
+    const prop = (x) => {
+      if (x.sol >= -0.5) return "→ couvert totalement par sa position de trésorerie actuelle.";
+      const c = cover[x.e];
+      if (c && c.left < 0.5) return "→ couvert par la position de trésorerie sur " + list(c.src) + " après équilibrage.";
+      if (c && c.src.length) return "→ Proposition : couvert à hauteur de " + amt(-x.sol - c.left) + " par " + list(c.src) + " après équilibrage ; reste " + amt(c.left) + " à financer, en priorisant la fiscalité et les salaires.";
+      return "→ Proposition : priorisation des échéances fiscales, salaires et autres urgences selon les disponibilités mobilisables (" + amt(-x.sol) + " à financer).";
+    };
+    const lines = [];
+    const top = E.slice().sort((a, b) => b.besoin - a.besoin);
+    const main = top.filter((x) => x.besoin >= 50), rest = top.filter((x) => main.indexOf(x) < 0);
+    main.forEach((x) => lines.push("* " + nm(x.e) + " : " + amt(x.besoin) + " FCFA – " + x.nat + "\n" + prop(x)));
+    // projets (cash plans) : fonds projet
+    C.P.forEach((p) => {
+      const b = sum(p.wk.slice(0, n));
+      if (b < 0.5) return;
+      const s = p.soldes[n - 1];
+      const nat = (p.nat || []).slice().sort((a, b2) => b2.v - a.v).slice(0, 2).map((x) => x.n.toLowerCase());
+      lines.push("* " + nm(p.ent) + " – projet : " + amt(b) + " FCFA – " + list(nat) + "\n" + (s >= -0.5 ? "→ couvert par le fonds projet (" + p.account + ")." : "→ Proposition : fonds projet insuffisant de " + amt(-s) + " : tirage des prêts du projet, report ou moratoire à étudier."));
+    });
+    if (rest.length) {
+      const def = rest.filter((x) => x.sol < -0.5);
+      lines.push("* Autres besoins : " + list(rest.map((x) => nm(x.e))) + "\n" + (def.length ? "→ Proposition : priorisation des échéances fiscales, salaires et autres urgences selon les disponibilités mobilisables." : "→ couverts par leur position de trésorerie actuelle."));
+    }
+    const EQ = CHR.equilibrage(C);
+    const bd = C.balDate || C.sit;
+    const mid = n === 2 ? " à mi-" + MOIS[endD.getUTCMonth()] : " d'ici le " + U.ddmm(endD);
+    const subject = "Reporting hebdomadaire de trésorerie CI au " + U.ddmm(bd);
+    const body = (o.greet || "Bonsoir Laureen,\nBonsoir Christophe,") + "\n" +
+      "Je vous prie de trouver ci-joint le reporting hebdomadaire de trésorerie CI au " + U.ddmm(bd) + ".\n" +
+      "Le besoin brut identifié" + mid + " est de " + amt(brut) + " FCFA dont " + amt(proj) + " au titre des projets.\n" +
+      "Après équilibrage de la semaine 1, le reste à financer est de " + amt(EQ.reste) + " FCFA.\n\n" +
+      "Les principales urgences sont les suivantes :\n\n" + lines.join("\n") + "\n\n" +
+      "Une mise à jour sera faite au besoin le mercredi.\n\n" + (o.sign || "Bien à vous,\nAnge");
+    return { subject, body };
+  };
+})();
+
 </script>
 <script>(function () {
   "use strict";
@@ -3769,9 +3879,27 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     el.innerHTML = h + "</table>";
     Array.prototype.forEach.call(el.querySelectorAll("select"), function (s) { s.onchange = function () { var id = s.getAttribute("data-id"); if (s.value) st.payMap[id] = s.value; else delete st.payMap[id]; recompute(); }; });
   }
+  // ---------- mail d'envoi (après chargement du reporting modifié) ----------
+  var mailDirty = false;
+  function renderMail(force) {
+    $("mailBox").classList.toggle("hidden", !st.editWb || !st.C);
+    if (!st.editWb || !st.C || (mailDirty && !force)) return;
+    try { var m = CHR.mailDraft(st.C, { n: +$("m-n").value }); $("m-subj").value = m.subject; $("m-body").value = m.body; mailDirty = false; $("m-msg").textContent = ""; }
+    catch (e) { console.error(e); $("m-msg").className = "msg err"; $("m-msg").textContent = "Mail non généré : " + e.message; }
+  }
+  $("m-body").addEventListener("input", function () { mailDirty = true; });
+  $("m-n").onchange = function () { renderMail(true); };
+  $("m-reset").onclick = function () { renderMail(true); };
+  $("m-copy").onclick = function () {
+    var t = $("m-body").value, done = function () { $("m-msg").className = "msg ok"; $("m-msg").textContent = "✓ Message copié"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, function () { $("m-body").select(); document.execCommand("copy"); done(); });
+    else { $("m-body").select(); document.execCommand("copy"); done(); }
+  };
+  $("m-open").onclick = function () { window.location.href = "mailto:?subject=" + encodeURIComponent($("m-subj").value) + "&body=" + encodeURIComponent($("m-body").value); };
   function render() {
     var C = st.C, T = C.T, L = st.L, CMP = st.CMP;
     renderPays(C);
+    renderMail(false);
     var paid = C.edit && C.edit.paid ? C.edit.paid.tot / 1e6 : 0;
     var nk = function (v, lab) { return [fmt(v, 1, true) + " M", (v < -0.05 ? "Besoin" : "Surplus") + " de trésorerie fin S5 – " + lab, v < -0.05 ? "red" : "green"]; };
     var k = [[fmt(T.tot) + " M", "Besoin S1 à S5 (Christophe)", ""], [fmt(T.totWk[0]) + " M", "dont S1", "red"], [fmt(T.cashAll) + " M", "Trésorerie au " + CHR.util.dmy(C.balDate || C.sit), ""], nk(T.netSoc[4], "comptes de sociétés"), nk(T.netDed[4], "comptes dédiés"),
