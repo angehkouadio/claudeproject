@@ -1077,7 +1077,7 @@ var RCI = (typeof RCI !== "undefined") ? RCI : {};
     const pres = new PptxCls();
     pres.layout = "LAYOUT_WIDE";
     pres.title = "Sociétés RCI – Besoins de financement : fonctionnement et projets";
-    pres.author = "Direction Trésorerie & Financement – Groupe Duval Afrique";
+    pres.author = "Trésorerie & Financement – Groupe Duval Afrique";
 
     const lab = M.lab, E = M.E, T = M.T, U = M.U, P = M.projects, rents = M.rents, RE = M.rentEnt;
     const logo = (assets.logo || "").replace(/^data:/, ""), cover = (assets.cover || "").replace(/^data:/, "");
@@ -1125,7 +1125,7 @@ var RCI = (typeof RCI !== "undefined") ? RCI : {};
       s.addText("SOCIÉTÉS RCI – TRÉSORERIE", { x: 0.8, y: 1.5, w: 6.9, h: 0.4, fontFace: F, fontSize: 14, bold: true, color: GOLD, charSpacing: 2, margin: 0, valign: "middle", isTextBox: true });
       s.addText("Besoins de financement : fonctionnement et projets", { x: 0.8, y: 2.0, w: 6.9, h: 2.0, fontFace: F, fontSize: 34, bold: true, color: "FFFFFF", margin: 0, valign: "top", isTextBox: true });
       s.addText("Situation au " + lab.sit + " – échéancier S1 à S" + lab.nWeeks + " (" + lab.horizon + ")", { x: 0.8, y: 4.2, w: 6.9, h: 0.5, fontFace: F, fontSize: 15, color: GOLD, margin: 0, valign: "middle", isTextBox: true });
-      s.addText("Direction Trésorerie & Financement – Groupe Duval Afrique  |  " + lab.edition, { x: 0.8, y: 6.5, w: 6.9, h: 0.4, fontFace: F, fontSize: 11, color: "FFFFFF", margin: 0, valign: "middle", isTextBox: true });
+      s.addText("Trésorerie & Financement – Groupe Duval Afrique  |  " + lab.edition, { x: 0.8, y: 6.5, w: 6.9, h: 0.4, fontFace: F, fontSize: 11, color: "FFFFFF", margin: 0, valign: "middle", isTextBox: true });
       s.addNotes("Couverture. Position de trésorerie au " + lab.pos + " ; échéancier de l'audit des décaissements du " + lab.sit + (lab.ver ? " (" + lab.ver + ")" : "") + ". Présentation générée automatiquement à partir des fichiers Excel sources.");
     }
 
