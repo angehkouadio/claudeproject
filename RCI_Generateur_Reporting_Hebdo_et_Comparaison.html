@@ -3822,7 +3822,7 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
     var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
   }
-  function stamp() { return CHR.util.dmy(st.C.sit).replace(/\//g, "-"); }
+  function stamp() { return CHR.util.dmy(st.C.balDate || st.C.sit).replace(/\//g, "-"); }
   function run(btn, fn) {
     var s = $("status");
     if (!st.C) { s.className = "msg err"; s.textContent = "Calcul impossible : vérifiez les fichiers."; return; }
