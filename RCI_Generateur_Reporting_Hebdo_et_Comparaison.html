@@ -145,6 +145,8 @@
       <div class="card">
         <label for="m-n">Besoin brut et urgences calculés sur</label>
         <select id="m-n"><option value="1">la semaine 1</option><option value="2" selected>les semaines 1 et 2 (mi-mois)</option><option value="5">les semaines 1 à 5</option></select>
+        <label for="m-com" style="margin-top:10px">Commentaires à intégrer (un paragraphe par commentaire ; commencez par « FINAFRICA : … » pour le rattacher à une entité, sinon il va dans « Points d'attention »)</label>
+        <textarea id="m-com" rows="5" style="font-family:inherit;line-height:1.45" placeholder="FINAFRICA : 1 MEUR attendu de FMS non encore reçu…"></textarea>
         <label for="m-subj" style="margin-top:10px">Objet</label><input type="text" id="m-subj">
         <label for="m-body" style="margin-top:10px">Message (modifiable)</label>
         <textarea id="m-body" rows="24" style="font-family:inherit;line-height:1.45"></textarea>
@@ -3616,7 +3618,8 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
 
 /* =====================================================================
    CHR.mailDraft : projet de mail d'envoi du reporting (modèle d'Ange)
-   C = modèle calculé ; o = { n: semaines retenues (2 = mi-mois), greet, sign }
+   C = modèle calculé ; o = { n: semaines retenues (2 = mi-mois), comments, greet, sign }
+   Aucun commentaire automatique : seuls les commentaires saisis sont intégrés (mise en forme légère).
    ===================================================================== */
 (function () {
   "use strict";
@@ -3662,49 +3665,59 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
       const d = natTxt(e.e);
       return { e: e.e, besoin: d.tot, nat: d.txt, sol: e.soldes[n - 1] };
     }).filter((x) => x.besoin >= 0.5);
-    // couverture : excédents des comptes de sociétés (PICI d'abord, puis les autres) affectés aux plus petits déficits
-    const pool = C.E.filter((e) => (e.e === "PICI" || e.e === "FIRST") && e.soldes[n - 1] > 0.5).map((e) => ({ e: e.e, v: e.soldes[n - 1] })).sort((a, b) => (a.e === "PICI" ? -1 : b.e === "PICI" ? 1 : b.v - a.v));
-    const cover = {};
-    const top0 = E.slice().sort((a, b) => b.besoin - a.besoin), main0 = top0.filter((x) => x.besoin >= 50);
-    main0.filter((x) => x.sol < -0.5).sort((a, b) => b.sol - a.sol).forEach((x) => {
-      let gap = -x.sol; const src = [];
-      pool.forEach((p) => { if (gap < 0.5 || p.v < 0.5 || p.e === x.e) return; const t = Math.min(gap, p.v); p.v -= t; gap -= t; src.push(nm(p.e)); });
-      cover[x.e] = { left: gap, src };
+    // commentaires saisis : « ENTITÉ : texte » rattaché à l'entité, le reste en points d'attention
+    const ALIAS = [["SCI FIRST", "FIRST"], ["FIRST", "FIRST"], ["PICI", "PICI"], ["TERRASSON", "TERASSON"], ["TERASSON", "TERASSON"], ["RIVIERA", "RIVIERA"], ["SCO AO", "SCO AO"], ["SCO", "SCO AO"], ["FINAFRICA", "FINAFRICA"], ["IMMONEUF", "IMMONEUF"], ["INFI", "INFI SOFT"], ["ODALYS", "ODALYS CI"], ["AB CENTER", "AB CENTER"], ["RHD", "RHD CI"]];
+    const byEnt = {}, general = [];
+    String(o.comments || "").split(/\n\s*\n|\n(?=\s*[-*•]?\s*[A-ZÉ][A-ZÉ ]{2,}\s*[:–-])/).map((t) => t.replace(/\s+/g, " ").trim()).filter(Boolean).forEach((t) => {
+      const u = t.replace(/^[-*•]\s*/, "");
+      const m = /^([A-Za-zÉé ]{3,20}?)\s*(?:–|-|:)\s*(.+)$/.exec(u);
+      const al = m ? ALIAS.find((a) => RCI.util.norm(m[1]).toUpperCase().replace(/\s+/g, " ").trim() === a[0] || RCI.util.norm(m[1]).toUpperCase().indexOf(a[0]) === 0) : null;
+      if (al && m) (byEnt[al[1]] = byEnt[al[1]] || []).push(CHR.mailPolish(m[2]));
+      else general.push(CHR.mailPolish(u));
     });
-    const prop = (x) => {
-      if (x.sol >= -0.5) return "→ couvert totalement par sa position de trésorerie actuelle.";
-      const c = cover[x.e];
-      if (c && c.left < 0.5) return "→ couvert par la position de trésorerie sur " + list(c.src) + " après équilibrage.";
-      if (c && c.src.length) return "→ Proposition : couvert à hauteur de " + amt(-x.sol - c.left) + " par " + list(c.src) + " après équilibrage ; reste " + amt(c.left) + " à financer, en priorisant la fiscalité et les salaires.";
-      return "→ Proposition : priorisation des échéances fiscales, salaires et autres urgences selon les disponibilités mobilisables (" + amt(-x.sol) + " à financer).";
-    };
+    const com = (e) => (byEnt[e] || []).map((t) => "\n→ " + t).join("");
     const lines = [];
     const top = E.slice().sort((a, b) => b.besoin - a.besoin);
     const main = top.filter((x) => x.besoin >= 50), rest = top.filter((x) => main.indexOf(x) < 0);
-    main.forEach((x) => lines.push("* " + nm(x.e) + " : " + amt(x.besoin) + " FCFA – " + x.nat + "\n" + prop(x)));
-    // projets (cash plans) : fonds projet
+    main.forEach((x) => lines.push("* " + nm(x.e) + " : " + amt(x.besoin) + " FCFA – " + x.nat + com(x.e)));
+    // projets (cash plans)
     C.P.forEach((p) => {
       const b = sum(p.wk.slice(0, n));
       if (b < 0.5) return;
-      const s = p.soldes[n - 1];
       const nat = (p.nat || []).slice().sort((a, b2) => b2.v - a.v).slice(0, 2).map((x) => x.n.toLowerCase());
-      lines.push("* " + nm(p.ent) + " – projet : " + amt(b) + " FCFA – " + list(nat) + "\n" + (s >= -0.5 ? "→ couvert par le fonds projet (" + p.account + ")." : "→ Proposition : fonds projet insuffisant de " + amt(-s) + " : tirage des prêts du projet, report ou moratoire à étudier."));
+      lines.push("* " + nm(p.ent) + " – projet : " + amt(b) + " FCFA – " + list(nat));
     });
-    if (rest.length) {
-      const def = rest.filter((x) => x.sol < -0.5);
-      lines.push("* Autres besoins : " + list(rest.map((x) => nm(x.e))) + "\n" + (def.length ? "→ Proposition : priorisation des échéances fiscales, salaires et autres urgences selon les disponibilités mobilisables." : "→ couverts par leur position de trésorerie actuelle."));
-    }
-    const EQ = CHR.equilibrage(C);
+    if (rest.length) lines.push("* Autres besoins : " + list(rest.map((x) => nm(x.e) + " " + amt(x.besoin))) + rest.map((x) => (byEnt[x.e] || []).map((t) => "\n→ " + nm(x.e) + " : " + t).join("")).join(""));
+    // commentaires sur une entité sans besoin sur l'horizon
+    Object.keys(byEnt).filter((e) => !top.some((x) => x.e === e)).forEach((e) => byEnt[e].forEach((t) => general.push(nm(e) + " : " + t)));
     const bd = C.balDate || C.sit;
     const mid = n === 2 ? " à mi-" + MOIS[endD.getUTCMonth()] : " d'ici le " + U.ddmm(endD);
     const subject = "Reporting hebdomadaire de trésorerie CI au " + U.ddmm(bd);
     const body = (o.greet || "Bonsoir Laureen,\nBonsoir Christophe,") + "\n" +
       "Je vous prie de trouver ci-joint le reporting hebdomadaire de trésorerie CI au " + U.ddmm(bd) + ".\n" +
-      "Le besoin brut identifié" + mid + " est de " + amt(brut) + " FCFA dont " + amt(proj) + " au titre des projets.\n" +
-      "Après équilibrage de la semaine 1, le reste à financer est de " + amt(EQ.reste) + " FCFA.\n\n" +
+      "Le besoin brut identifié" + mid + " est de " + amt(brut) + " FCFA dont " + amt(proj) + " au titre des projets.\n\n" +
       "Les principales urgences sont les suivantes :\n\n" + lines.join("\n") + "\n\n" +
+      (general.length ? "Points d'attention :\n" + general.map((t) => "* " + t).join("\n") + "\n\n" : "") +
       "Une mise à jour sera faite au besoin le mercredi.\n\n" + (o.sign || "Bien à vous,\nAnge");
     return { subject, body };
+  };
+
+  // mise en forme légère d'un commentaire saisi (sans changer le sens)
+  CHR.mailPolish = function (t) {
+    let x = String(t || "").replace(/\s+/g, " ").trim();
+    x = x.replace(/\bil ya\b/gi, "il y a").replace(/\bya\b/g, "y a").replace(/\s+([,.])/g, "$1").replace(/\s*([;:!?])\s*/g, " $1 ").replace(/\s+/g, " ").replace(/ \./g, ".");
+    // montants en euros : « 1MEUR », « 1 M EUR », « 1 meur » → « 1 M EUR (≈ 656 M FCFA) »
+    x = x.replace(/(\d+(?:[.,]\d+)?)\s*(m|millions?\s+d['’]?)\s*(eur|euros|€)\b/gi, (m0, v) => {
+      const e = parseFloat(v.replace(",", "."));
+      return v.replace(".", ",") + " M EUR (≈ " + Math.round(e * CHR.FX) + " M FCFA)";
+    });
+    // fautes fréquentes (accents, frappe) – sans toucher au sens
+    const FIX = { reception: "réception", denouement: "dénouement", foncitionnement: "fonctionnement", fonctionement: "fonctionnement", tresorerie: "trésorerie", echeance: "échéance", echeances: "échéances", recu: "reçu", etait: "était", etaient: "étaient", deja: "déjà", previsions: "prévisions", reglement: "règlement", reglements: "règlements", fiscalite: "fiscalité", interets: "intérêts", interet: "intérêt" };
+    x = x.replace(/[A-Za-zÀ-ÿ]+/g, (w) => { const f = FIX[w.toLowerCase()]; return f ? (w.charAt(0) === w.charAt(0).toUpperCase() ? f.charAt(0).toUpperCase() + f.slice(1) : f) : w; });
+    x = x.charAt(0).toUpperCase() + x.slice(1);
+    x = x.replace(/([.!?]) +([a-zà-ÿ])/g, (m0, p, c) => p + " " + c.toUpperCase());
+    if (!/[.!?…)]$/.test(x)) x += ".";
+    return x;
   };
 })();
 
@@ -3884,10 +3897,17 @@ var CHR = (typeof CHR !== "undefined") ? CHR : {};
   function renderMail(force) {
     $("mailBox").classList.toggle("hidden", !st.editWb || !st.C);
     if (!st.editWb || !st.C || (mailDirty && !force)) return;
-    try { var m = CHR.mailDraft(st.C, { n: +$("m-n").value }); $("m-subj").value = m.subject; $("m-body").value = m.body; mailDirty = false; $("m-msg").textContent = ""; }
+    try { var m = CHR.mailDraft(st.C, { n: +$("m-n").value, comments: $("m-com").value }); $("m-subj").value = m.subject; $("m-body").value = m.body; mailDirty = false; $("m-msg").textContent = ""; }
     catch (e) { console.error(e); $("m-msg").className = "msg err"; $("m-msg").textContent = "Mail non généré : " + e.message; }
   }
   $("m-body").addEventListener("input", function () { mailDirty = true; });
+  try { $("m-com").value = localStorage.getItem("chr-mail-com") || ""; } catch (e) { }
+  var comT = null;
+  $("m-com").addEventListener("input", function () {
+    try { localStorage.setItem("chr-mail-com", $("m-com").value); } catch (e) { }
+    clearTimeout(comT);
+    comT = setTimeout(function () { if (mailDirty) { $("m-msg").className = "msg"; $("m-msg").textContent = "Message retouché à la main : cliquez sur « Régénérer » pour intégrer les commentaires."; } else renderMail(true); }, 400);
+  });
   $("m-n").onchange = function () { renderMail(true); };
   $("m-reset").onclick = function () { renderMail(true); };
   $("m-copy").onclick = function () {
